@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/tokens.dart';
 import '../../widgets/common.dart';
 import '../cases/case_detail_screen.dart';
 
@@ -34,32 +36,48 @@ class VerificationResultScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
       appBar: AppBar(title: const Text('Verification Submitted')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+        padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.xl, Insets.lg, Insets.xxl),
         children: [
-          const Center(
-            child: Icon(Icons.check_circle, color: Color(0xFF2E7D32), size: 76),
+          Column(
+            children: [
+              Container(
+                width: 88,
+                height: 88,
+                decoration: const BoxDecoration(
+                  color: AppColors.successSoft,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_circle,
+                  color: AppColors.success,
+                  size: 52,
+                ),
+              ),
+              const Gap(Insets.lg),
+              Text(
+                'FIELD VERIFICATION SUBMITTED',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleLarge!.copyWith(letterSpacing: 0.4),
+              ),
+              const Gap(Insets.xs),
+              Text(
+                caseNo,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium!.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.brand,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-          const Center(
-            child: Text(
-              'FIELD VERIFICATION SUBMITTED',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: 0.6),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Center(
-            child: Text(
-              caseNo,
-              style: TextStyle(fontSize: 14, color: Colors.grey[700], fontWeight: FontWeight.w700),
-            ),
-          ),
-          const SizedBox(height: 24),
+          const Gap(Insets.xxl),
           SectionCard(
-            title: 'SUBMISSION SUMMARY',
+            title: 'Submission summary',
             icon: Icons.summarize_outlined,
             children: [
               InfoRow(label: 'Case', value: caseNo, highlight: true),
@@ -69,33 +87,44 @@ class VerificationResultScreen extends StatelessWidget {
                 label: 'GPS',
                 value: gpsCaptured ? (gpsIsMock ? 'Tagged (demo fix)' : 'Locked') : 'Unavailable',
               ),
-              InfoRow(label: 'Storage', value: queuedOffline ? 'On device (offline)' : 'Queued for sync'),
+              InfoRow(
+                label: 'Storage',
+                value: queuedOffline ? 'On device (offline)' : 'Queued for sync',
+              ),
               InfoRow(label: 'Status', value: 'Awaiting Officer Review', highlight: true),
             ],
           ),
-          const SizedBox(height: 16),
+          const Gap(Insets.lg),
           SectionCard(
-            title: 'WHAT HAPPENS NEXT',
+            title: 'What happens next',
             icon: Icons.route_outlined,
             children: [
-              _step('1', 'Your record is saved on this device — no internet was required.'),
-              _step('2', queuedOffline
-                  ? 'It uploads automatically as soon as connectivity returns.'
-                  : 'It syncs with the district server on the next queue run.'),
-              _step('3', 'The District Authority reviews the verification and updates the case status.'),
-              _step('4', 'Track progress from the case dossier timeline.'),
+              _step(context, '1', 'Your record is saved on this device — no internet was required.'),
+              _step(
+                context,
+                '2',
+                queuedOffline
+                    ? 'It uploads automatically as soon as connectivity returns.'
+                    : 'It syncs with the district server on the next queue run.',
+              ),
+              _step(
+                context,
+                '3',
+                'The District Authority reviews the verification and updates the case status.',
+              ),
+              _step(context, '4', 'Track progress from the case dossier timeline.'),
             ],
           ),
-          const SizedBox(height: 24),
+          const Gap(Insets.xxl),
           FilledButton.icon(
             onPressed: () => _openCase(context),
-            icon: const Icon(Icons.folder_open),
+            icon: const Icon(Icons.folder_open, size: 18),
             label: const Text('VIEW CASE'),
           ),
-          const SizedBox(height: 10),
+          const Gap(Insets.sm),
           OutlinedButton.icon(
             onPressed: () => _toDashboard(context),
-            icon: const Icon(Icons.home_outlined),
+            icon: const Icon(Icons.home_outlined, size: 18),
             label: const Text('BACK TO DASHBOARD'),
           ),
         ],
@@ -103,19 +132,29 @@ class VerificationResultScreen extends StatelessWidget {
     );
   }
 
-  Widget _step(String n, String text) {
+  Widget _step(BuildContext context, String n, String text) {
+    final theme = Theme.of(context);
+
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.only(bottom: Insets.md),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CircleAvatar(
-            radius: 11,
-            backgroundColor: const Color(0xFF1B5E20),
-            child: Text(n, style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w800)),
+          Container(
+            width: 24,
+            height: 24,
+            decoration: const BoxDecoration(
+              color: AppColors.successSoft,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              n,
+              style: theme.textTheme.labelMedium!.copyWith(color: AppColors.success),
+            ),
           ),
-          const SizedBox(width: 12),
-          Expanded(child: Text(text, style: const TextStyle(height: 1.4, fontSize: 13.5))),
+          const Gap(Insets.md, horizontal: true),
+          Expanded(child: Text(text, style: theme.textTheme.bodyMedium)),
         ],
       ),
     );

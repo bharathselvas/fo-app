@@ -24,11 +24,16 @@ void wireDependencies(ProviderContainer container) {
   // Cooldown so the engine's own syncing -> online transition cannot re-trigger
   // an endless run() loop (the historic UI flicker).
   var lastAutoRun = DateTime.fromMillisecondsSinceEpoch(0);
-  container.read(connectivityServiceProvider).statusStream.listen((status) {
+  final connectivity = container.read(connectivityServiceProvider);
+  connectivity.statusStream.listen((status) {
     if (status != ConnectionStatus.online) return;
     final now = DateTime.now();
     if (now.difference(lastAutoRun) < const Duration(seconds: 10)) return;
     lastAutoRun = now;
-    engine.runNow();
+    engine.runNow(respectBackoff: true);
   });
+  // Start the connectivity watcher here, where the stream is actually
+  // subscribed. `start()` is idempotent, so this is safe even when
+  // `connectionProvider` has already kicked it off.
+  connectivity.start();
 }

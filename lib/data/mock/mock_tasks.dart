@@ -160,6 +160,42 @@ List<CaseTask> buildMockTasks() {
       assigned: -13,
       instructions: 'Witness possession handover and collect the receipt.',
     ),
+    _TaskSeed(
+      id: 'TASK-0135',
+      caseNo: 'LA-TN-CBE-2026-0135',
+      title: 'Award Document Follow-up',
+      priority: CasePriority.high,
+      status: TaskStatus.pending,
+      due: 2,
+      assigned: -3,
+      instructions:
+          'The award document is still missing from the district office. Collect '
+          'the signed copy before verification can be closed.',
+    ),
+    _TaskSeed(
+      id: 'TASK-0130',
+      caseNo: 'LA-TN-CBE-2026-0130',
+      title: 'R&R Entitlement Verification',
+      priority: CasePriority.medium,
+      status: TaskStatus.pending,
+      due: 5,
+      assigned: -1,
+      instructions:
+          'Meet both tenant families and record their entitlement claims with '
+          'photographic proof of residence.',
+    ),
+    _TaskSeed(
+      id: 'TASK-0133',
+      caseNo: 'LA-TN-CBE-2026-0133',
+      title: 'Possession Handover Witness',
+      priority: CasePriority.high,
+      status: TaskStatus.pending,
+      due: 0,
+      assigned: -2,
+      instructions:
+          'Attend the handover, witness the boundary demarcation and collect the '
+          'signed acknowledgement from the landowner.',
+    ),
   ];
 
   return [

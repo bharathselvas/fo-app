@@ -1,14 +1,13 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/api_config.dart';
 import '../database/database.dart';
 import '../network/api_client.dart';
 import '../network/connectivity_service.dart';
 import '../storage/file_store.dart';
 import 'retry_policy.dart';
-import '../config/api_config.dart';
 
 /// Sync operations in dependency order (locked).
 enum SyncOperation {
@@ -47,11 +46,28 @@ class SyncQueueService {
         );
   }
 
-  Future<List<SyncQueue>> pending() async {
-    return (_db.select(_db.syncQueues)
+  /// Queue rows eligible to be attempted right now.
+  ///
+  /// [respectBackoff] holds back rows still inside their retry window. It is
+  /// off by default so a deliberate SYNC NOW always makes progress, and the
+  /// background auto-run in `wiring.dart` opts in to keep a flaky network
+  /// from turning into a tight retry loop.
+  Future<List<SyncQueue>> pending({DateTime? now, bool respectBackoff = false}) async {
+    final at = (now ?? DateTime.now()).toUtc();
+    final rows = await (_db.select(_db.syncQueues)
           ..where((t) => t.status.isIn(['PENDING', 'FAILED']))
           ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]))
         .get();
+    if (!respectBackoff) return rows;
+    return [
+      for (final r in rows)
+        if (isRetryDue(
+          retryCount: r.retryCount,
+          lastAttemptAt: r.updatedAt,
+          now: at,
+        ))
+          r,
+    ];
   }
 
   Future<int> pendingCount() async {
@@ -87,10 +103,6 @@ class SyncQueueService {
   }
 }
 
-final syncQueueServiceProvider = Provider<SyncQueueService>((ref) {
-  throw UnimplementedError('syncQueueServiceProvider must be overridden');
-});
-
 /// Dependency-aware sync engine.
 class SyncEngine {
   SyncEngine(this._db, this._api, this._queue, this._files, this._connectivity);
@@ -104,7 +116,10 @@ class SyncEngine {
   bool _running = false;
   bool get isRunning => _running;
 
-  Future<SyncResult> runNow() async {
+  /// Runs one sync pass. [respectBackoff] is true only for the automatic
+  /// background run; the officer's SYNC NOW always attempts every row so a
+  /// manual retry makes immediate progress.
+  Future<SyncResult> runNow({bool respectBackoff = false}) async {
     if (_running) return SyncResult.inProgress();
     _running = true;
     try {
@@ -114,7 +129,7 @@ class SyncEngine {
         return SyncResult.offline();
       }
 
-      final pending = await _queue.pending();
+      final pending = await _queue.pending(respectBackoff: respectBackoff);
       if (pending.isEmpty) {
         // Nothing to do — never flip the connection status for an idle run,
         // otherwise the status listener re-triggers us in a loop.
@@ -134,13 +149,79 @@ class SyncEngine {
         } catch (e) {
           await _queue.markFailed(item.id, e.toString());
           failed++;
+          await _recordVisitFailure(item, e.toString());
         }
       }
-      return SyncResult(success: failed == 0 && synced > 0 || pending.isEmpty, synced: synced, failed: failed);
+      await _markExhaustedVisitsFailed();
+      return SyncResult(
+        success: failed == 0 && synced > 0 || pending.isEmpty,
+        synced: synced,
+        failed: failed,
+      );
     } finally {
       _running = false;
       await _connectivity.refresh();
     }
+  }
+
+  /// Mirrors a queue failure onto the owning visit so the Sync Center's visit
+  /// cards and the "Failed" counter reflect reality instead of staying at 0.
+  Future<void> _recordVisitFailure(SyncQueue item, String error) async {
+    final visitId = await _visitIdFor(item);
+    if (visitId == null) return;
+    await (_db.update(_db.fieldVisits)..where((t) => t.id.equals(visitId))).write(
+      FieldVisitsCompanion(
+        status: const Value('SYNC_FAILED'),
+        lastError: Value(error),
+        retryCount: Value(await _retryCountFor(item)),
+        updatedAt: Value(DateTime.now().toUtc()),
+      ),
+    );
+  }
+
+  /// A visit whose every queue row has exhausted its retries is permanently
+  /// failed. Until this existed, a dead visit stayed "Waiting" forever.
+  Future<void> _markExhaustedVisitsFailed() async {
+    final parked = await (_db.select(_db.syncQueues)
+          ..where((t) => t.status.equals('FAILED')))
+        .get();
+    if (parked.isEmpty) return;
+
+    final visits = await (_db.select(_db.fieldVisits)
+          ..where((t) => t.status.isNotIn(['SYNCED', 'SYNC_FAILED'])))
+        .get();
+    for (final v in visits) {
+      final rows = parked.where((q) => q.entityId == v.id || q.payload.contains(v.id));
+      if (rows.isEmpty) continue;
+      final attempts = rows.fold<int>(0, (sum, q) => sum + q.retryCount);
+      if (attempts < kMaxRetries) continue;
+      await (_db.update(_db.fieldVisits)..where((t) => t.id.equals(v.id))).write(
+        FieldVisitsCompanion(
+          status: const Value('SYNC_FAILED'),
+          lastError: Value('Upload parked after $kMaxRetries attempts. '
+              'Data is safe on this device — retry when online.'),
+          retryCount: Value(attempts),
+          updatedAt: Value(DateTime.now().toUtc()),
+        ),
+      );
+    }
+  }
+
+  /// Resolves the visit an entity belongs to, reusing the entity→visit
+  /// mapping the upload operations already need.
+  Future<String?> _visitIdFor(SyncQueue item) async {
+    if (item.entityType == 'field_visit') return item.entityId;
+    try {
+      return await _resolveVisitId(item, jsonDecode(item.payload) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<int> _retryCountFor(SyncQueue item) async {
+    final row =
+        await (_db.select(_db.syncQueues)..where((t) => t.id.equals(item.id))).getSingleOrNull();
+    return row?.retryCount ?? 1;
   }
 
   List<SyncQueue> _order(List<SyncQueue> rows) {

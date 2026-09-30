@@ -1,28 +1,37 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import '../../core/database/database.dart';
 import '../../core/network/connectivity_service.dart';
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_routes.dart';
+import '../../core/theme/tokens.dart';
 import '../../data/models/enums.dart';
 import '../../data/models/evidence_record.dart';
 import '../../data/models/land_case.dart';
 import '../../services/field_location_service.dart';
 import '../../services/fo_providers.dart';
 import '../../widgets/common.dart';
-import '../../widgets/status_widgets.dart';
 import '../assignments/assigned_task_adapter.dart';
 import '../auth/auth_providers.dart';
 import '../evidence/camera_screen.dart';
 import 'field_visit_controller.dart';
+import 'steps/wizard_steps.dart';
 import 'verification_result_screen.dart';
+import 'wizard_state.dart';
 
-/// 9-step field verification wizard with local auto-save and offline queueing:
+/// Nine-step field verification wizard with local auto-save and offline queueing:
 /// Location → Parcel → Land Use → Structures → Cultivation → Occupant →
 /// Documents → Evidence → Review & Declaration.
+///
+/// The shell owns chrome and navigation only. Each step is an isolated
+/// `ConsumerWidget` (see `steps/wizard_steps.dart`) and the mutable form lives in
+/// [WizardController], so editing a text field no longer rebuilds the app bar,
+/// the progress bar, the connection banner or the nav buttons.
 class FieldVisitWizardScreen extends ConsumerStatefulWidget {
   const FieldVisitWizardScreen({super.key, required this.caseData});
 
@@ -33,48 +42,12 @@ class FieldVisitWizardScreen extends ConsumerStatefulWidget {
 }
 
 class _FieldVisitWizardScreenState extends ConsumerState<FieldVisitWizardScreen> {
-  static const _steps = [
-    'Location',
-    'Parcel',
-    'Land Use',
-    'Structures',
-    'Cultivation',
-    'Occupant',
-    'Documents',
-    'Evidence',
-    'Review',
-  ];
-
-  int _step = 0;
+  /// Id of the visit being edited. Empty until the visit row is created, which
+  /// is why the step queries guard on it.
+  String get _visitId => _visit?.id ?? '';
   FieldVisit? _visit;
-  bool _init = false;
+  Object? _bootstrapError;
   bool _submitting = false;
-
-  // Land-use form
-  String _landUse = kLandUses.first;
-  String _irrigation = 'Rain-fed';
-  bool _boundaryConfirmed = true;
-  final _notesCtrl = TextEditingController();
-
-  // Occupant / observations (folded into visit notes on save)
-  bool _occupantPresent = true;
-  late final TextEditingController _occupantNameCtrl =
-      TextEditingController(text: widget.caseData.landOwner.name);
-  final _observationsCtrl = TextEditingController();
-
-  // GPS
-  FieldLocation? _location;
-  bool _locating = false;
-  String? _gpsError;
-
-  // Evidence type for the next capture
-  String _evidenceType = kEvidenceTypes.first;
-
-  // Declaration
-  bool _declared = false;
-
-  AssignedTask get _task =>
-      assignedTaskFromCase(widget.caseData, officerId: ref.read(currentUserProvider).id);
 
   @override
   void initState() {
@@ -82,135 +55,202 @@ class _FieldVisitWizardScreenState extends ConsumerState<FieldVisitWizardScreen>
     _bootstrap();
   }
 
-  @override
-  void dispose() {
-    _notesCtrl.dispose();
-    _occupantNameCtrl.dispose();
-    _observationsCtrl.dispose();
-    super.dispose();
+  // The per-step queries. Declared once here rather than re-invoked inside each
+  // build via `FutureBuilder(future: _structures())` — which re-ran the drift
+  // query on every rebuild of the step.
+  late final _structuresProvider = FutureProvider<List<Structure>>(
+    (_) => _queryStructures(),
+  );
+  late final _vegetationProvider = FutureProvider<List<Vegetation>>(
+    (_) => _queryVegetation(),
+  );
+  late final _documentsProvider = FutureProvider<List<LocalDocument>>(
+    (_) => _queryDocuments(),
+  );
+  late final _evidenceProvider = FutureProvider<List<Evidence>>(
+    (_) => _queryEvidence(),
+  );
+
+  late final AppDatabase db = ref.watch(dbProvider);
+
+  Future<List<Structure>> _queryStructures() async {
+    if (_visitId.isEmpty) return [];
+    final query = db.select(db.structures)
+      ..where((t) => t.visitId.equals(_visitId));
+    return query.get();
+  }
+
+  Future<List<Vegetation>> _queryVegetation() async {
+    if (_visitId.isEmpty) return [];
+    final query = db.select(db.vegetations)
+      ..where((t) => t.visitId.equals(_visitId));
+    return query.get();
+  }
+
+  Future<List<LocalDocument>> _queryDocuments() async {
+    if (_visitId.isEmpty) return [];
+    final query = db.select(db.localDocuments)
+      ..where((t) => t.visitId.equals(_visitId));
+    return query.get();
+  }
+
+  Future<List<Evidence>> _queryEvidence() async {
+    if (_visitId.isEmpty) return [];
+    final query = db.select(db.evidences)
+      ..where((t) => t.visitId.equals(_visitId));
+    return query.get();
   }
 
   Future<void> _bootstrap() async {
-    final user = ref.read(currentUserProvider);
-    final controller = ref.read(fieldVisitControllerProvider);
-    final visit = await controller.startVisit(task: _task, officerId: user.id);
-    if (!mounted) return;
-    setState(() {
-      _visit = visit;
-      _init = true;
-      if (visit.landUse != null && kLandUses.contains(visit.landUse)) {
-        _landUse = visit.landUse!;
-      }
-      if (visit.irrigation != null) _irrigation = visit.irrigation!;
-      if (visit.boundaryConfirmed != null) _boundaryConfirmed = visit.boundaryConfirmed!;
-      if (visit.notes != null) _notesCtrl.text = _stripOccupantBlock(visit.notes!);
-    });
-  }
-
-  /// Removes the occupant/observation block previously folded into the notes
-  /// so an edited visit never accumulates duplicate lines.
-  String _stripOccupantBlock(String notes) => notes
-      .split('\n')
-      .where((l) =>
-          !l.startsWith('Occupant present:') &&
-          !l.startsWith('Occupant:') &&
-          !l.startsWith('Observations:'))
-      .join('\n')
-      .trimRight();
-
-  String _combinedNotes() {
-    final lines = <String>[
-      if (_notesCtrl.text.trim().isNotEmpty) _notesCtrl.text.trim(),
-      'Occupant present: ${_occupantPresent ? 'Yes' : 'No'}',
-      if (_occupantNameCtrl.text.trim().isNotEmpty)
-        'Occupant: ${_occupantNameCtrl.text.trim()}',
-      if (_observationsCtrl.text.trim().isNotEmpty)
-        'Observations: ${_observationsCtrl.text.trim()}',
-    ];
-    return lines.join('\n');
-  }
-
-  Future<void> _autoSave() async {
-    final visit = _visit;
-    if (visit == null) return;
-    await ref.read(fieldVisitControllerProvider).updateVisit(
-          visit.id,
-          landUse: _landUse,
-          irrigation: _irrigation,
-          boundaryConfirmed: _boundaryConfirmed,
-          notes: _combinedNotes(),
-        );
+    try {
+      final user = ref.read(currentUserProvider);
+      final controller = ref.read(fieldVisitControllerProvider);
+      final visit = await controller.startVisit(
+        task: assignedTaskFromCase(widget.caseData, officerId: user.id),
+        officerId: user.id,
+      );
+      if (!mounted) return;
+      ref.read(wizardControllerProvider.notifier).hydrate(visit);
+      setState(() => _visit = visit);
+    } catch (e) {
+      // Previously uncaught: a drift failure here left the officer staring at a
+      // spinner with no way forward.
+      if (mounted) setState(() => _bootstrapError = e);
+    }
   }
 
   Future<void> _captureGps() async {
-    setState(() {
-      _locating = true;
-      _gpsError = null;
-    });
+    final ctl = ref.read(wizardControllerProvider.notifier);
+    ctl.setLocating(true);
     final loc = await fieldLocationService.acquire(
       nearLat: widget.caseData.latitude,
       nearLng: widget.caseData.longitude,
     );
     if (!mounted) return;
-    setState(() {
-      _location = loc;
-      _locating = false;
-      _gpsError = loc.isMock
+    ctl.setLocation(
+      loc,
+      notice: loc.isMock
           ? 'No device fix available — a demo position near the parcel was used. '
               'The record is still GPS-tagged.'
-          : null;
-    });
+          : null,
+    );
+    await ctl.persist();
     final visit = _visit;
-    if (visit != null) {
-      await ref.read(fieldVisitControllerProvider).updateVisit(
-            visit.id,
-            gpsLat: loc.latitude.toStringAsFixed(7),
-            gpsLng: loc.longitude.toStringAsFixed(7),
-            gpsAccuracy: loc.accuracy.toStringAsFixed(1),
-            gpsTimestamp: loc.timestamp.toUtc().toIso8601String(),
-          );
-    }
+    if (visit == null) return;
+    await ref.read(fieldVisitControllerProvider).updateVisit(
+          visit.id,
+          gpsLat: loc.latitude.toStringAsFixed(7),
+          gpsLng: loc.longitude.toStringAsFixed(7),
+          gpsAccuracy: loc.accuracy.toStringAsFixed(1),
+          gpsTimestamp: loc.timestamp.toUtc().toIso8601String(),
+        );
   }
 
   Future<void> _captureEvidence() async {
     final visit = _visit;
     if (visit == null) return;
+    final type = ref.read(wizardControllerProvider).evidenceType;
+
+    final useCamera = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(Insets.lg, 0, Insets.lg, Insets.sm),
+              child: Text('ADD EVIDENCE', style: Theme.of(context).textTheme.labelSmall),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Use camera'),
+              subtitle: const Text('Capture a new GPS-tagged photograph'),
+              onTap: () => Navigator.of(sheetCtx).pop(true),
+            ),
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Log evidence without camera'),
+              subtitle: const Text(
+                'Records a GPS-tagged entry with no photo — for emulators and '
+                'camera-less devices. Stored and uploaded like any capture.',
+              ),
+              onTap: () => Navigator.of(sheetCtx).pop(false),
+            ),
+            const Gap(Insets.sm),
+          ],
+        ),
+      ),
+    );
+    if (useCamera == null || !mounted) return;
+
+    final recordId = ref.read(foStateProvider.notifier).nextEvidenceId();
+    final capturedAt = DateTime.now();
+    final location = ref.read(wizardControllerProvider).location;
+
+    /// Writes the same record to both stores: Drift (durable, queued for
+    /// upload) and the in-memory dossier the case screens render. Both are
+    /// keyed off the same visit, so nothing can drift apart.
+    Future<void> persistCapture({
+      required String? localPath,
+      required bool placeholder,
+    }) async {
+      await ref.read(fieldVisitControllerProvider).addEvidence(
+            visitId: visit.id,
+            parcelId: widget.caseData.parcelId,
+            officerId: visit.officerId,
+            type: type.toLowerCase().replaceAll(' ', '_'),
+            bytes: placeholder
+                ? base64Decode(kPlaceholderEvidencePng)
+                : await File(localPath!).readAsBytes(),
+            description: type,
+            latitude: location?.latitude,
+            longitude: location?.longitude,
+            gpsAccuracy: location?.accuracy,
+            locationAvailable: location != null,
+          );
+      ref.read(foStateProvider.notifier).addEvidence(
+            EvidenceRecord(
+              id: recordId,
+              caseNo: widget.caseData.caseNo,
+              type: type,
+              caption: '$type captured during field verification',
+              capturedAt: capturedAt,
+              latitude: location?.latitude,
+              longitude: location?.longitude,
+              accuracyMetres: location?.accuracy,
+              gpsTagged: location != null,
+              uploadStatus: UploadStatus.pending,
+              filePath: localPath,
+              officerId: visit.officerId,
+            ),
+          );
+    }
+
+    if (!useCamera) {
+      await persistCapture(localPath: null, placeholder: true);
+      _invalidateEvidenceQueries();
+      _toast('$type logged — GPS ${location == null ? 'not' : ''} tagged');
+      return;
+    }
+
     final path = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
+      AppRoutes.zoom(const CameraCaptureScreen()),
     );
     if (path == null || !mounted) return;
-    final bytes = await File(path).readAsBytes();
-    await ref.read(fieldVisitControllerProvider).addEvidence(
-          visitId: visit.id,
-          parcelId: widget.caseData.parcelId,
-          officerId: visit.officerId,
-          type: _evidenceType.toLowerCase().replaceAll(' ', '_'),
-          bytes: bytes,
-          description: _evidenceType,
-          latitude: _location?.latitude,
-          longitude: _location?.longitude,
-          gpsAccuracy: _location?.accuracy,
-          locationAvailable: _location != null,
-        );
-    // Mirror into the case dossier so the case detail screen shows it too.
-    final state = ref.read(foStateProvider);
-    ref.read(foStateProvider.notifier).addEvidence(
-          EvidenceRecord(
-            id: 'EV-${(state.evidence.length + 1).toString().padLeft(3, '0')}',
-            caseNo: widget.caseData.caseNo,
-            type: _evidenceType,
-            caption: '$_evidenceType captured during field verification',
-            capturedAt: DateTime.now(),
-            latitude: _location?.latitude,
-            longitude: _location?.longitude,
-            accuracyMetres: _location?.accuracy,
-            gpsTagged: _location != null,
-            uploadStatus: UploadStatus.pending,
-            filePath: path,
-            officerId: visit.officerId,
-          ),
-        );
-    setState(() {});
+    if (path == kUsePlaceholder) {
+      await persistCapture(localPath: null, placeholder: true);
+      _invalidateEvidenceQueries();
+      _toast('$type logged — camera unavailable, GPS tag kept');
+      return;
+    }
+    await persistCapture(localPath: path, placeholder: false);
+    _invalidateEvidenceQueries();
+  }
+
+  void _invalidateEvidenceQueries() {
+    ref.invalidate(_evidenceProvider);
   }
 
   Future<void> _pickDocument() async {
@@ -240,35 +280,47 @@ class _FieldVisitWizardScreenState extends ConsumerState<FieldVisitWizardScreen>
           mimeType: mimeType,
           extension: ext,
         );
-    setState(() {});
+    if (mounted) ref.invalidate(_documentsProvider);
   }
 
-  Future<List<Structure>> _structures() async {
-    final visit = _visit;
-    if (visit == null) return [];
-    final db = ref.read(dbProvider);
-    return (db.select(db.structures)..where((t) => t.visitId.equals(visit.id))).get();
+  Future<void> _addStructure() async {
+    final result = await showDialog<_StructureDraft>(
+      context: context,
+      builder: (_) => const _StructureDialog(),
+    );
+    if (result == null) return;
+    await ref.read(fieldVisitControllerProvider).addStructure(
+          visitId: _visitId,
+          type: result.type,
+          areaValue: result.area,
+          constructionType: result.construction,
+          condition: result.condition,
+          notes: result.notes,
+        );
+    if (mounted) ref.invalidate(_structuresProvider);
   }
 
-  Future<List<Vegetation>> _vegetation() async {
-    final visit = _visit;
-    if (visit == null) return [];
-    final db = ref.read(dbProvider);
-    return (db.select(db.vegetations)..where((t) => t.visitId.equals(visit.id))).get();
+  Future<void> _addVegetation() async {
+    final result = await showDialog<_VegetationDraft>(
+      context: context,
+      builder: (_) => const _VegetationDialog(),
+    );
+    if (result == null) return;
+    await ref.read(fieldVisitControllerProvider).addVegetation(
+          visitId: _visitId,
+          species: result.species,
+          count: result.count,
+          cropType: result.cropType,
+          areaHa: result.areaHa,
+        );
+    if (mounted) ref.invalidate(_vegetationProvider);
   }
 
-  Future<List<LocalDocument>> _documents() async {
-    final visit = _visit;
-    if (visit == null) return [];
-    final db = ref.read(dbProvider);
-    return (db.select(db.localDocuments)..where((t) => t.visitId.equals(visit.id))).get();
-  }
-
-  Future<List<Evidence>> _evidence() async {
-    final visit = _visit;
-    if (visit == null) return [];
-    final db = ref.read(dbProvider);
-    return (db.select(db.evidences)..where((t) => t.visitId.equals(visit.id))).get();
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _submit() async {
@@ -276,29 +328,40 @@ class _FieldVisitWizardScreenState extends ConsumerState<FieldVisitWizardScreen>
     if (visit == null || _submitting) return;
     setState(() => _submitting = true);
     try {
-      await _autoSave();
+      final state = ref.read(foStateProvider);
+      final evidenceCount = state.evidenceFor(widget.caseData.caseNo).length;
+      final blockers =
+          ref.read(wizardControllerProvider).submitBlockers(evidenceCount);
+      if (blockers.isNotEmpty) {
+        if (mounted) {
+          setState(() => _submitting = false);
+          _toast('Incomplete: ${blockers.join(' · ')}');
+        }
+        return;
+      }
+
+      await ref.read(wizardControllerProvider.notifier).persist();
       await ref.read(fieldVisitControllerProvider).submitVisit(visit.id);
 
       final conn = ref.read(connectionProvider).valueOrNull ?? ConnectionStatus.offline;
       final queuedOffline = conn != ConnectionStatus.online;
-      final state = ref.read(foStateProvider);
-      final evidenceCount = state.evidenceFor(widget.caseData.caseNo).length;
+      final location = ref.read(wizardControllerProvider).location;
 
       ref.read(foStateProvider.notifier).submitVerification(
             caseNo: widget.caseData.caseNo,
             evidenceCount: evidenceCount,
-            gpsCaptured: _location != null,
+            gpsCaptured: location != null,
             queuedOffline: queuedOffline,
           );
 
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => VerificationResultScreen(
+        AppRoutes.fadeUp(
+          VerificationResultScreen(
             caseNo: widget.caseData.caseNo,
             evidenceCount: evidenceCount,
-            gpsCaptured: _location != null,
-            gpsIsMock: _location?.isMock ?? false,
+            gpsCaptured: location != null,
+            gpsIsMock: location?.isMock ?? false,
             queuedOffline: queuedOffline,
             visitId: visit.id,
           ),
@@ -306,816 +369,495 @@ class _FieldVisitWizardScreenState extends ConsumerState<FieldVisitWizardScreen>
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
         setState(() => _submitting = false);
+        _toast('Could not submit: $e');
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_init || _visit == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    final pending = ref.watch(pendingSyncCountProvider);
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Step ${_step + 1} of 9 — ${_steps[_step]}'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(6),
-          child: LinearProgressIndicator(
-            value: (_step + 1) / 9,
-            minHeight: 6,
-            backgroundColor: Colors.white24,
+    if (_bootstrapError != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Field verification')),
+        body: EmptyState(
+          icon: Icons.error_outline,
+          tone: EmptyTone.danger,
+          title: 'Could not start the visit',
+          message: '$_bootstrapError',
+          action: OutlinedButton(
+            onPressed: () => setState(() {
+              _bootstrapError = null;
+              _bootstrap();
+            }),
+            child: const Text('RETRY'),
           ),
         ),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            ConnectionBanner(pendingCount: pending),
-            Expanded(child: _buildStep()),
-            SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    if (_step > 0)
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () async {
-                            await _autoSave();
-                            setState(() => _step--);
-                          },
-                          child: const Text('Back'),
-                        ),
-                      ),
-                    if (_step > 0) const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: _step < 8
-                          ? FilledButton(
-                              onPressed: () async {
-                                await _autoSave();
-                                setState(() => _step++);
-                              },
-                              child: const Text('Next'),
-                            )
-                          : FilledButton(
-                              onPressed: _submitting || !_declared ? null : _submit,
-                              child: _submitting
-                                  ? const SizedBox(
-                                      height: 20,
-                                      width: 20,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2, color: Colors.white),
-                                    )
-                                  : const Text('SUBMIT VERIFICATION'),
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+      );
+    }
+
+    if (_visit == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Field verification')),
+        body: const LoadingState(label: 'Preparing field visit…'),
+      );
+    }
+
+    return Scaffold(
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight + 34 + 4),
+        child: _WizardHeader(
+          subtitle: widget.caseData.caseNo,
+          child: _ProgressBar(step: ref.watch(wizardControllerProvider).step),
         ),
+      ),
+      // Keyed on the step so each step keeps its own scroll position, and so the
+      // incoming step's ListView starts fresh rather than inheriting the
+      // previous step's offset.
+      body: KeyedSubtree(
+        key: ValueKey(ref.watch(wizardControllerProvider).step),
+        child: _buildStep(),
+      ),
+      bottomNavigationBar: _WizardNavBar(
+        submitting: _submitting,
+        onSubmit: _submit,
       ),
     );
   }
 
   Widget _buildStep() {
-    switch (_step) {
-      case 0:
-        return _locationStep();
-      case 1:
-        return _parcelStep();
-      case 2:
-        return _landUseStep();
-      case 3:
-        return _structuresStep();
-      case 4:
-        return _cultivationStep();
-      case 5:
-        return _occupantStep();
-      case 6:
-        return _documentsStep();
-      case 7:
-        return _evidenceStep();
-      default:
-        return _reviewStep();
-    }
+    final step = ref.watch(wizardControllerProvider).step;
+    final counts = _visit == null
+        ? null
+        : combineCounts(
+            ref.watch(_structuresProvider),
+            ref.watch(_vegetationProvider),
+            ref.watch(_documentsProvider),
+            ref.watch(_evidenceProvider),
+          );
+
+    // Blockers must agree with the check rows directly above them, so both read
+    // the durable Drift set the officer just wrote to. The previous build
+    // derived the blockers from the in-memory dossier while the check rows read
+    // Drift, which meant the two could contradict each other on screen.
+    final evidenceCount = counts?.valueOrNull?.$4 ??
+        ref.read(foStateProvider).evidenceFor(widget.caseData.caseNo).length;
+
+    return switch (step) {
+      0 => LocationStep(onCaptureGps: _captureGps),
+      1 => ParcelStep(caseData: widget.caseData),
+      2 => const LandUseStep(),
+      3 => StructuresStep(
+          structures: ref.watch(_structuresProvider),
+          onAdd: _addStructure,
+        ),
+      4 => CultivationStep(
+          vegetation: ref.watch(_vegetationProvider),
+          onAdd: _addVegetation,
+        ),
+      5 => OccupantStep(defaultOccupantName: widget.caseData.landOwner.name),
+      6 => DocumentsStep(
+          documents: ref.watch(_documentsProvider),
+          onAdd: _pickDocument,
+        ),
+      7 => EvidenceStep(
+          evidence: ref.watch(_evidenceProvider),
+          onCapture: _captureEvidence,
+        ),
+      _ => ReviewStep(
+          caseNo: widget.caseData.caseNo,
+          locationSummary: _locationSummary,
+          counts: counts,
+          blockers:
+              ref.watch(wizardControllerProvider).submitBlockers(evidenceCount),
+          offline:
+              (ref.watch(connectionProvider).valueOrNull ?? ConnectionStatus.offline) !=
+                  ConnectionStatus.online,
+        ),
+    };
   }
 
-  // ---------------------------------------------------------------- Location
-
-  Widget _locationStep() {
-    final loc = _location;
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('GPS LOCATION',
-            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1)),
-        const SizedBox(height: 4),
-        Text(
-          'Capture your position at the parcel before recording observations.',
-          style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-        ),
-        const SizedBox(height: 12),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                _kv('Latitude', loc?.latitude.toStringAsFixed(6) ?? '—'),
-                _kv('Longitude', loc?.longitude.toStringAsFixed(6) ?? '—'),
-                _kv('Accuracy', loc != null ? loc.accuracyLabel : '—'),
-                _kv(
-                  'Timestamp',
-                  loc == null
-                      ? '—'
-                      : DateFormat('d MMM yyyy, h:mm a').format(loc.timestamp),
-                ),
-                _kv(
-                  'Source',
-                  loc == null
-                      ? '—'
-                      : loc.isMock
-                          ? 'DEMO FIX (near parcel)'
-                          : 'DEVICE GPS',
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (loc != null) ...[
-          const SizedBox(height: 12),
-          StatusChip(
-            label: loc.isMock ? 'GPS TAGGED (DEMO)' : 'GPS LOCKED',
-            color: loc.isMock ? Colors.amber.shade800 : const Color(0xFF2E7D32),
-            icon: Icons.my_location,
-          ),
-        ],
-        const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _locating ? null : _captureGps,
-          icon: _locating
-              ? const SizedBox(
-                  height: 18,
-                  width: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
-              : const Icon(Icons.my_location),
-          label: Text(_locating ? 'Getting GPS…' : loc == null ? 'CAPTURE GPS' : 'RE-CAPTURE GPS'),
-        ),
-        if (_gpsError != null) ...[
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.amber.shade50,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.amber.shade300),
-            ),
-            child: Text(_gpsError!, style: const TextStyle(fontSize: 13)),
-          ),
-        ],
-      ],
-    );
+  String get _locationSummary {
+    final loc = ref.read(wizardControllerProvider).location;
+    if (loc == null) return 'Not captured';
+    return '${loc.latitude.toStringAsFixed(5)}, '
+        '${loc.longitude.toStringAsFixed(5)} · ${loc.accuracyLabel}';
   }
+}
 
-  // ------------------------------------------------------------------ Parcel
+class _WizardHeader extends ConsumerWidget implements PreferredSizeWidget {
+  const _WizardHeader({required this.subtitle, required this.child});
 
-  Widget _parcelStep() {
-    final c = widget.caseData;
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('PARCEL UNDER VERIFICATION',
-            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1)),
-        const SizedBox(height: 4),
-        Text(
-          'Read-only from the case file. Confirm you are at the right parcel before proceeding.',
-          style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-        ),
-        const SizedBox(height: 12),
-        SectionCard(
-          title: 'PARCEL DETAILS',
-          icon: Icons.landscape_outlined,
-          children: [
-            InfoRow(label: 'Case', value: c.caseNo, highlight: true),
-            InfoRow(label: 'Parcel ID', value: c.parcelId),
-            InfoRow(label: 'Survey Number', value: c.surveyNo, highlight: true),
-            InfoRow(label: 'Village', value: c.village),
-            InfoRow(label: 'Taluk', value: c.taluk),
-            InfoRow(label: 'District', value: c.district),
-            InfoRow(label: 'Extent', value: c.extentLabel, highlight: true),
-            InfoRow(label: 'Land type', value: c.landType),
-          ],
-        ),
-        const SizedBox(height: 16),
-        SectionCard(
-          title: 'LANDOWNER ON RECORD',
-          icon: Icons.person_outline,
-          children: [
-            InfoRow(label: 'Name', value: c.landOwner.name, highlight: true),
-            InfoRow(label: 'Ownership', value: c.landOwner.ownershipType),
-            InfoRow(label: 'Verification', value: c.landOwner.verificationStatus),
-          ],
-        ),
-      ],
-    );
-  }
+  final String subtitle;
+  final Widget child;
 
-  // ---------------------------------------------------------------- Land use
+  @override
+  Size get preferredSize => const Size.fromHeight(kToolbarHeight + 34 + 4);
 
-  Widget _landUseStep() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('LAND USE VERIFICATION', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 12),
-        const Text('Land Use', style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: kLandUses
-              .map((v) => ChoiceChip(
-                    label: Text(v),
-                    selected: _landUse == v,
-                    onSelected: (_) {
-                      setState(() => _landUse = v);
-                      _autoSave();
-                    },
-                  ))
-              .toList(),
-        ),
-        const SizedBox(height: 16),
-        const Text('Irrigation', style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: kIrrigationTypes
-              .map((v) => ChoiceChip(
-                    label: Text(v),
-                    selected: _irrigation == v,
-                    onSelected: (_) {
-                      setState(() => _irrigation = v);
-                      _autoSave();
-                    },
-                  ))
-              .toList(),
-        ),
-        const SizedBox(height: 16),
-        const Text('Boundary confirmed on ground',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: ChoiceChip(
-                label: const Text('YES'),
-                selected: _boundaryConfirmed,
-                onSelected: (_) {
-                  setState(() => _boundaryConfirmed = true);
-                  _autoSave();
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ChoiceChip(
-                label: const Text('NO'),
-                selected: !_boundaryConfirmed,
-                onSelected: (_) {
-                  setState(() => _boundaryConfirmed = false);
-                  _autoSave();
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _notesCtrl,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: 'Land-use notes',
-            border: OutlineInputBorder(),
-          ),
-          onChanged: (_) => _autoSave(),
-        ),
-      ],
-    );
-  }
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(wizardControllerProvider);
+    final theme = Theme.of(context);
+    final stepCount = WizardController.steps.length;
 
-  // -------------------------------------------------------------- Structures
-
-  Widget _structuresStep() {
-    return FutureBuilder<List<Structure>>(
-      future: _structures(),
-      builder: (context, snap) {
-        final items = snap.data ?? [];
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Row(
-              children: [
-                const Text('STRUCTURES', style: TextStyle(fontWeight: FontWeight.w800)),
-                const Spacer(),
-                FilledButton.tonal(
-                  onPressed: _addStructureDialog,
-                  child: const Text('Add Structure'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (items.isEmpty)
-              const EmptyState(
-                icon: Icons.home_work_outlined,
-                title: 'No Structures Recorded',
-                message: 'Add every building, wall or fixture found on the parcel.',
-              ),
-            ...items.map((s) => Card(
-                  child: ListTile(
-                    title: Text(s.type, style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: Text([
-                      if (s.areaValue != null) '${s.areaValue} ${s.areaUnit}',
-                      if (s.constructionType != null) s.constructionType!,
-                      if (s.condition != null) s.condition!,
-                      if (s.notes != null && s.notes!.isNotEmpty) s.notes!,
-                    ].join(' · ')),
-                    trailing: StatusChip(label: s.syncStatus, color: Colors.blueGrey),
-                  ),
-                )),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _addStructureDialog() async {
-    final typeCtrl = TextEditingController();
-    final areaCtrl = TextEditingController();
-    final constCtrl = TextEditingController();
-    final condCtrl = TextEditingController();
-    final notesCtrl = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Add Structure'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                  controller: typeCtrl,
-                  decoration: const InputDecoration(
-                      labelText: 'Type', hintText: 'Residential House')),
-              TextField(
-                  controller: areaCtrl,
-                  decoration: const InputDecoration(labelText: 'Area (sq.ft)'),
-                  keyboardType: TextInputType.number),
-              TextField(
-                  controller: constCtrl,
-                  decoration:
-                      const InputDecoration(labelText: 'Construction Type', hintText: 'RCC')),
-              TextField(
-                  controller: condCtrl,
-                  decoration: const InputDecoration(labelText: 'Condition', hintText: 'Good')),
-              TextField(controller: notesCtrl, decoration: const InputDecoration(labelText: 'Notes')),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () async {
-              final visit = _visit;
-              if (visit == null || typeCtrl.text.trim().isEmpty) return;
-              await ref.read(fieldVisitControllerProvider).addStructure(
-                    visitId: visit.id,
-                    type: typeCtrl.text.trim(),
-                    areaValue: double.tryParse(areaCtrl.text),
-                    constructionType:
-                        constCtrl.text.trim().isEmpty ? null : constCtrl.text.trim(),
-                    condition: condCtrl.text.trim().isEmpty ? null : condCtrl.text.trim(),
-                    notes: notesCtrl.text.trim().isEmpty ? null : notesCtrl.text.trim(),
-                  );
-              if (ctx.mounted) Navigator.pop(ctx);
-              setState(() {});
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // -------------------------------------------------------------- Cultivation
-
-  Widget _cultivationStep() {
-    return FutureBuilder<List<Vegetation>>(
-      future: _vegetation(),
-      builder: (context, snap) {
-        final items = snap.data ?? [];
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Row(
-              children: [
-                const Text('TREES / CROPS', style: TextStyle(fontWeight: FontWeight.w800)),
-                const Spacer(),
-                FilledButton.tonal(
-                  onPressed: _addVegetationDialog,
-                  child: const Text('Add'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (items.isEmpty)
-              const EmptyState(
-                icon: Icons.grass,
-                title: 'No Cultivation Recorded',
-                message: 'Record standing crops, trees and their extent on the parcel.',
-              ),
-            ...items.map((v) => Card(
-                  child: ListTile(
-                    title: Text('${v.species} × ${v.count}',
-                        style: const TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: Text([
-                      if (v.cropType != null) v.cropType!,
-                      if (v.areaHa != null) '${v.areaHa} ha',
-                      if (v.notes != null && v.notes!.isNotEmpty) v.notes!,
-                    ].join(' · ')),
-                    trailing: StatusChip(label: v.syncStatus, color: Colors.green),
-                  ),
-                )),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _addVegetationDialog() async {
-    final speciesCtrl = TextEditingController();
-    final countCtrl = TextEditingController(text: '1');
-    final cropCtrl = TextEditingController();
-    final areaCtrl = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Add Trees / Crops'),
-        content: Column(
+    return Material(
+      color: AppColors.brand,
+      child: SafeArea(
+        bottom: false,
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
-                controller: speciesCtrl,
-                decoration: const InputDecoration(labelText: 'Species', hintText: 'Coconut')),
-            TextField(
-                controller: countCtrl,
-                decoration: const InputDecoration(labelText: 'Count'),
-                keyboardType: TextInputType.number),
-            TextField(controller: cropCtrl, decoration: const InputDecoration(labelText: 'Crop Type')),
-            TextField(
-                controller: areaCtrl,
-                decoration: const InputDecoration(labelText: 'Estimated Area (ha)'),
-                keyboardType: TextInputType.number),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () async {
-              final visit = _visit;
-              if (visit == null || speciesCtrl.text.trim().isEmpty) return;
-              await ref.read(fieldVisitControllerProvider).addVegetation(
-                    visitId: visit.id,
-                    species: speciesCtrl.text.trim(),
-                    count: int.tryParse(countCtrl.text) ?? 1,
-                    cropType: cropCtrl.text.trim().isEmpty ? null : cropCtrl.text.trim(),
-                    areaHa: double.tryParse(areaCtrl.text),
-                  );
-              if (ctx.mounted) Navigator.pop(ctx);
-              setState(() {});
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------- Occupant
-
-  Widget _occupantStep() {
-    final owner = widget.caseData.landOwner;
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('OCCUPANT & OBSERVATIONS',
-            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1)),
-        const SizedBox(height: 12),
-        SectionCard(
-          title: 'PERSON ON RECORD',
-          icon: Icons.badge_outlined,
-          children: [
-            InfoRow(label: 'Landowner', value: owner.name, highlight: true),
-            InfoRow(label: 'Ownership type', value: owner.ownershipType),
-            InfoRow(label: 'Contact status', value: owner.contactStatus),
-            InfoRow(label: 'Verification status', value: owner.verificationStatus),
-          ],
-        ),
-        const SizedBox(height: 16),
-        const Text('Is the occupant present at the site?',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: ChoiceChip(
-                label: const Text('PRESENT'),
-                selected: _occupantPresent,
-                onSelected: (_) {
-                  setState(() => _occupantPresent = true);
-                  _autoSave();
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ChoiceChip(
-                label: const Text('ABSENT'),
-                selected: !_occupantPresent,
-                onSelected: (_) {
-                  setState(() => _occupantPresent = false);
-                  _autoSave();
-                },
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _occupantNameCtrl,
-          decoration: const InputDecoration(
-            labelText: 'Occupant / representative name',
-            border: OutlineInputBorder(),
-          ),
-          onChanged: (_) => _autoSave(),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _observationsCtrl,
-          maxLines: 5,
-          decoration: const InputDecoration(
-            labelText: 'Field observations',
-            hintText: 'Discrepancies in extent, encroachment, crop condition, disputes…',
-            border: OutlineInputBorder(),
-          ),
-          onChanged: (_) => _autoSave(),
-        ),
-      ],
-    );
-  }
-
-  // --------------------------------------------------------------- Documents
-
-  Widget _documentsStep() {
-    return FutureBuilder<List<LocalDocument>>(
-      future: _documents(),
-      builder: (context, snap) {
-        final items = snap.data ?? [];
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Row(
-              children: [
-                const Text('DOCUMENTS', style: TextStyle(fontWeight: FontWeight.w800)),
-                const Spacer(),
-                FilledButton.tonal(onPressed: _pickDocument, child: const Text('Add File')),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Attach field-collected records (Pattta, EC, 7/12 extract, photos of papers).',
-              style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-            ),
-            const SizedBox(height: 12),
-            if (items.isEmpty)
-              const EmptyState(
-                icon: Icons.folder_open,
-                title: 'No Documents Captured',
-                message: 'No field documents captured yet. Tap "Add File" to attach one.',
-              ),
-            ...items.map((d) => Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.description),
-                    title: Text(d.type.replaceAll('_', ' ').toUpperCase()),
-                    subtitle: Text(d.localFilePath.split('/').last),
-                    trailing: StatusChip(label: d.syncStatus, color: Colors.brown),
+            SizedBox(
+              height: kToolbarHeight,
+              child: IconTheme.merge(
+                data: const IconThemeData(color: AppColors.textOnBrand, size: 22),
+                child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => Navigator.of(context).maybePop(),
                   ),
-                )),
-          ],
-        );
-      },
-    );
-  }
-
-  // ---------------------------------------------------------------- Evidence
-
-  Widget _evidenceStep() {
-    return FutureBuilder<List<Evidence>>(
-      future: _evidence(),
-      builder: (context, snap) {
-        final items = snap.data ?? [];
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Text('FIELD EVIDENCE', style: TextStyle(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 12),
-            const Text('Evidence type', style: TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: kEvidenceTypes
-                  .map((t) => ChoiceChip(
-                        label: Text(t),
-                        selected: _evidenceType == t,
-                        onSelected: (_) => setState(() => _evidenceType = t),
-                      ))
-                  .toList(),
-            ),
-            const SizedBox(height: 16),
-            if (items.isEmpty)
-              const EmptyState(
-                icon: Icons.photo_camera_outlined,
-                title: 'No Evidence Yet',
-                message: 'Capture photographs of the boundary, land use, structures and '
-                    'survey stones from the field.',
-              )
-            else
-              GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                children: items.map((e) {
-                  return Card(
-                    clipBehavior: Clip.antiAlias,
+                  Expanded(
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: e.localFilePath.isNotEmpty &&
-                                  File(e.localFilePath).existsSync()
-                              ? Image.file(File(e.localFilePath), fit: BoxFit.cover)
-                              : const Center(child: Icon(Icons.image)),
+                        Text(
+                          'Step ${s.step + 1} of $stepCount — ${WizardController.steps[s.step]}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium!
+                              .copyWith(color: AppColors.textOnBrand),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(e.description ?? e.type,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.w700, fontSize: 12),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis),
-                              StatusChip(label: e.syncStatus, color: Colors.teal),
-                            ],
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall!.copyWith(
+                            fontSize: 11.5,
+                            color: Colors.white.withValues(alpha: 0.7),
                           ),
                         ),
                       ],
                     ),
-                  );
-                }).toList(),
-              ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: _captureEvidence,
-              icon: const Icon(Icons.camera_alt),
-              label: Text('+ CAPTURE ($_evidenceType)'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  // ------------------------------------------------------------------ Review
-
-  Widget _reviewStep() {
-    return FutureBuilder<List<Object>>(
-      future: () async {
-        final s = await _structures();
-        final v = await _vegetation();
-        final d = await _documents();
-        final e = await _evidence();
-        return [s.length, v.length, d.length, e.length];
-      }(),
-      builder: (context, snap) {
-        final counts = snap.data ?? [0, 0, 0, 0];
-        final conn = ref.watch(connectionProvider).valueOrNull ?? ConnectionStatus.offline;
-        final offline = conn != ConnectionStatus.online;
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Text('REVIEW & DECLARATION',
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
-            const SizedBox(height: 8),
-            Text(widget.caseData.caseNo,
-                style: const TextStyle(fontWeight: FontWeight.w700)),
-            Text(
-              '${widget.caseData.village}, ${widget.caseData.taluk} · '
-              'Survey ${widget.caseData.surveyNo}',
-              style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              child: Column(
-                children: [
-                  _check(_location != null, 'GPS location captured'),
-                  _check(_landUse.isNotEmpty, 'Land use verified ($_landUse)'),
-                  _check(_notesCtrl.text.trim().isNotEmpty || _observationsCtrl.text.trim().isNotEmpty,
-                      'Observations recorded'),
-                  _check((counts[0] as int) > 0, '${counts[0]} structures'),
-                  _check((counts[1] as int) > 0, '${counts[1]} trees/crops'),
-                  _check((counts[2] as int) > 0, '${counts[2]} documents'),
-                  _check((counts[3] as int) > 0, '${counts[3]} evidence items'),
+                  ),
+                  const SizedBox(width: Insets.lg),
                 ],
               ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              color: offline ? Colors.red.shade50 : Colors.green.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      offline ? 'Network: OFFLINE' : 'Network: ONLINE',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      offline
-                          ? 'Your verification will be stored on the device and uploaded '
-                              'automatically when connectivity returns.'
-                          : 'Submission will be queued and synchronized with the backend.',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  ],
-                ),
               ),
             ),
-            const SizedBox(height: 16),
-            CheckboxListTile(
-              value: _declared,
-              onChanged: (v) => setState(() => _declared = v ?? false),
-              controlAffinity: ListTileControlAffinity.leading,
-              contentPadding: EdgeInsets.zero,
-              title: const Text(
-                'I declare that the observations recorded above are true to the best '
-                'of my knowledge, based on physical verification at the site.',
-                style: TextStyle(fontSize: 13.5, height: 1.4),
-              ),
-            ),
-            if (!_declared)
-              Text(
-                'Tick the declaration to enable submission.',
-                style: TextStyle(fontSize: 12.5, color: Colors.red.shade700),
-              ),
+            child,
           ],
-        );
-      },
-    );
-  }
-
-  Widget _check(bool ok, String label) {
-    return ListTile(
-      dense: true,
-      leading: Icon(ok ? Icons.check_circle : Icons.radio_button_unchecked,
-          color: ok ? Colors.green : Colors.grey),
-      title: Text(label),
-    );
-  }
-
-  Widget _kv(String k, String v) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(k, style: TextStyle(color: Colors.grey[700])),
-          Text(v, style: const TextStyle(fontWeight: FontWeight.w700)),
-        ],
+        ),
       ),
+    );
+  }
+}
+
+class _ProgressBar extends StatelessWidget {
+  const _ProgressBar({required this.step});
+
+  final int step;
+
+  @override
+  Widget build(BuildContext context) {
+    final stepCount = WizardController.steps.length;
+    return SizedBox(
+      height: 4,
+      child: LinearProgressIndicator(
+        value: (step + 1) / stepCount,
+        minHeight: 4,
+        backgroundColor: Colors.white24,
+        valueColor: const AlwaysStoppedAnimation(Colors.white),
+      ),
+    );
+  }
+}
+
+/// The persistent Back / Next bar.
+///
+/// Split into its own widget so a keystroke in a step's text field rebuilds
+/// only this small subtree, never the whole scaffold.
+class _WizardNavBar extends ConsumerWidget {
+  const _WizardNavBar({
+    required this.submitting,
+    required this.onSubmit,
+  });
+
+  final bool submitting;
+  final Future<void> Function() onSubmit;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final stepCount = WizardController.steps.length;
+    final s = ref.watch(wizardControllerProvider);
+    final ctl = ref.read(wizardControllerProvider.notifier);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.md, Insets.lg, Insets.md),
+          child: Row(
+            children: [
+              if (s.step > 0) ...[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () async {
+                      await ctl.persist();
+                      ctl.goBack();
+                    },
+                    child: const Text('Back'),
+                  ),
+                ),
+                const Gap(Insets.sm, horizontal: true),
+              ],
+              Expanded(
+                flex: 2,
+                child: s.step < stepCount - 1
+                    ? FilledButton(
+                        onPressed: () async {
+                          final blocker = s.blockerFor(s.step);
+                          if (blocker != null) {
+                            ScaffoldMessenger.of(context)
+                              ..hideCurrentSnackBar()
+                              ..showSnackBar(SnackBar(content: Text(blocker)));
+                            return;
+                          }
+                          await ctl.persist();
+                          ctl.goNext();
+                        },
+                        child: const Text('Next'),
+                      )
+                    : FilledButton.icon(
+                        onPressed: submitting || !s.declared ? null : onSubmit,
+                        icon: submitting
+                            ? const SizedBox(
+                                height: 18,
+                                width: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.cloud_upload_outlined, size: 18),
+                        label: Text(submitting ? 'SUBMITTING…' : 'SUBMIT VERIFICATION'),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------------ add dialogs
+
+class _StructureDraft {
+  const _StructureDraft({
+    required this.type,
+    required this.area,
+    required this.construction,
+    required this.condition,
+    required this.notes,
+  });
+
+  final String type;
+  final double? area;
+  final String? construction;
+  final String? condition;
+  final String? notes;
+}
+
+class _VegetationDraft {
+  const _VegetationDraft({
+    required this.species,
+    required this.count,
+    required this.cropType,
+    required this.areaHa,
+  });
+
+  final String species;
+  final int count;
+  final String? cropType;
+  final double? areaHa;
+}
+
+class _StructureDialog extends StatefulWidget {
+  const _StructureDialog();
+
+  @override
+  State<_StructureDialog> createState() => _StructureDialogState();
+}
+
+class _StructureDialogState extends State<_StructureDialog> {
+  final _type = TextEditingController();
+  final _area = TextEditingController();
+  final _construction = TextEditingController();
+  final _condition = TextEditingController();
+  final _notes = TextEditingController();
+
+  @override
+  void dispose() {
+    for (final c in [_type, _area, _construction, _condition, _notes]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Structure'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _type,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Type *',
+                hintText: 'Residential House',
+              ),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _area,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Area (sq.ft)'),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _construction,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Construction Type',
+                hintText: 'RCC',
+              ),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _condition,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(
+                labelText: 'Condition',
+                hintText: 'Good',
+              ),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _notes,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(labelText: 'Notes'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            if (_type.text.trim().isEmpty) return;
+            String? orNull(String v) => v.trim().isEmpty ? null : v.trim();
+            Navigator.pop(
+              context,
+              _StructureDraft(
+                type: _type.text.trim(),
+                area: double.tryParse(_area.text),
+                construction: orNull(_construction.text),
+                condition: orNull(_condition.text),
+                notes: orNull(_notes.text),
+              ),
+            );
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+class _VegetationDialog extends StatefulWidget {
+  const _VegetationDialog();
+
+  @override
+  State<_VegetationDialog> createState() => _VegetationDialogState();
+}
+
+class _VegetationDialogState extends State<_VegetationDialog> {
+  final _species = TextEditingController();
+  final _count = TextEditingController(text: '1');
+  final _crop = TextEditingController();
+  final _area = TextEditingController();
+
+  @override
+  void dispose() {
+    for (final c in [_species, _count, _crop, _area]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Trees / Crops'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _species,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Species *',
+                hintText: 'Coconut',
+              ),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _count,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Count'),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _crop,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(labelText: 'Crop Type'),
+            ),
+            const Gap(Insets.sm),
+            TextField(
+              controller: _area,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Estimated Area (ha)'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            if (_species.text.trim().isEmpty) return;
+            Navigator.pop(
+              context,
+              _VegetationDraft(
+                species: _species.text.trim(),
+                count: int.tryParse(_count.text) ?? 1,
+                cropType: _crop.text.trim().isEmpty ? null : _crop.text.trim(),
+                areaHa: double.tryParse(_area.text),
+              ),
+            );
+          },
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

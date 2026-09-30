@@ -1,4 +1,6 @@
-import 'package:flutter/material.dart';
+import 'dart:ui' show Color;
+
+import '../../core/theme/app_colors.dart';
 
 /// Central vocabulary for case / task / document state.
 ///
@@ -19,15 +21,15 @@ enum CaseStatus {
   final String label;
 
   Color get color => switch (this) {
-        verificationPending => const Color(0xFFF57F17),
-        inProgress => const Color(0xFF1565C0),
-        awaitingDocuments => const Color(0xFF6A1B9A),
-        compensationPending => const Color(0xFFE65100),
+        verificationPending => AppColors.warning,
+        inProgress => AppColors.info,
+        awaitingDocuments => AppColors.violet,
+        compensationPending => AppColors.serverDown,
         rrVerification => const Color(0xFF00695C),
         possessionPending => const Color(0xFF283593),
-        officerReview => const Color(0xFF2E7D32),
-        completed => const Color(0xFF2E7D32),
-        overdue => const Color(0xFFB71C1C),
+        officerReview => AppColors.success,
+        completed => AppColors.success,
+        overdue => AppColors.danger,
       };
 
   bool get isTerminal => this == completed;
@@ -42,9 +44,9 @@ enum CasePriority {
   final String label;
 
   Color get color => switch (this) {
-        high => const Color(0xFFB71C1C),
-        medium => const Color(0xFFF57F17),
-        low => const Color(0xFF37474F),
+        high => AppColors.danger,
+        medium => AppColors.warning,
+        low => AppColors.neutral,
       };
 
   int get rank => switch (this) {
@@ -63,9 +65,9 @@ enum TaskStatus {
   final String label;
 
   Color get color => switch (this) {
-        pending => const Color(0xFFF57F17),
-        inProgress => const Color(0xFF1565C0),
-        completed => const Color(0xFF2E7D32),
+        pending => AppColors.warning,
+        inProgress => AppColors.info,
+        completed => AppColors.success,
       };
 }
 
@@ -79,10 +81,10 @@ enum DocumentStatus {
   final String label;
 
   Color get color => switch (this) {
-        verified => const Color(0xFF2E7D32),
-        pendingReview => const Color(0xFFF57F17),
-        pending => const Color(0xFF1565C0),
-        notAvailable => const Color(0xFFB71C1C),
+        verified => AppColors.success,
+        pendingReview => AppColors.warning,
+        pending => AppColors.info,
+        notAvailable => AppColors.danger,
       };
 }
 
@@ -100,11 +102,11 @@ enum NotificationKind {
   final String label;
 
   Color get color => switch (this) {
-        priority => const Color(0xFFB71C1C),
-        taskAssigned => const Color(0xFF1565C0),
-        syncComplete => const Color(0xFF2E7D32),
-        slaAlert => const Color(0xFFE65100),
-        documentUpdate => const Color(0xFF6A1B9A),
+        priority => AppColors.danger,
+        taskAssigned => AppColors.info,
+        syncComplete => AppColors.success,
+        slaAlert => AppColors.serverDown,
+        documentUpdate => AppColors.violet,
         verification => const Color(0xFF00695C),
       };
 }
@@ -118,8 +120,8 @@ extension UploadStatusX on UploadStatus {
       };
 
   Color get color => switch (this) {
-        UploadStatus.pending => const Color(0xFFF57F17),
-        UploadStatus.synced => const Color(0xFF2E7D32),
+        UploadStatus.pending => AppColors.warning,
+        UploadStatus.synced => AppColors.success,
       };
 }
 

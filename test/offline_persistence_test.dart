@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/native.dart';
-import 'package:bhoomi_setu_fo/core/database/database.dart';
-import 'package:bhoomi_setu_fo/core/utils/ids.dart';
-import 'package:bhoomi_setu_fo/features/map/wkt_parser.dart';
+import 'package:terranex_fo/core/database/database.dart';
+import 'package:terranex_fo/core/utils/ids.dart';
+import 'package:terranex_fo/features/map/wkt_parser.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -134,7 +134,7 @@ void main() {
     test('path includes visit and evidence id pattern', () {
       final visitId = newClientId();
       final evidenceId = newClientId();
-      final path = '/data/user/0/in.bhoomisetu.bhoomi_setu_fo/app_flutter/field_data'
+      final path = '/data/user/0/in.terranex.terranex_fo/app_flutter/field_data'
           '/evidence/$visitId/$evidenceId.jpg';
       expect(path.contains('/evidence/$visitId/'), isTrue);
       expect(path.endsWith('.jpg'), isTrue);

@@ -32,6 +32,15 @@ List<AppNotification> buildMockNotifications() {
     _NoteSeed('N-009', NotificationKind.slaAlert, 'Case LA-TN-CBE-2026-0119 is overdue',
         'Verification was due 3 days ago. Update the case or request an extension.',
         caseNo: 'LA-TN-CBE-2026-0119', dayOffset: -3, hour: 9, minute: 12),
+    _NoteSeed('N-010', NotificationKind.priority, 'Possession handover due today',
+        'LA-TN-CBE-2026-0133 at Anupatti — witness the handover and collect the acknowledgement.',
+        caseNo: 'LA-TN-CBE-2026-0133', taskId: 'TASK-0133', dayOffset: 0, hour: 7, minute: 45),
+    _NoteSeed('N-011', NotificationKind.documentUpdate, 'Award document still missing',
+        'LA-TN-CBE-2026-0135 is blocked until the signed award document is received.',
+        caseNo: 'LA-TN-CBE-2026-0135', taskId: 'TASK-0135', dayOffset: -5, hour: 11, minute: 20),
+    _NoteSeed('N-012', NotificationKind.taskAssigned, 'R&R entitlement verification assigned',
+        'TASK-0130 — verify entitlement of two tenant families at Iyadurai.',
+        caseNo: 'LA-TN-CBE-2026-0130', taskId: 'TASK-0130', dayOffset: -2, hour: 10, minute: 15),
   ];
 
   return [

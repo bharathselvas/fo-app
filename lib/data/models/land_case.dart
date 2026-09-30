@@ -128,9 +128,10 @@ class LandCase {
   String get coordinateLabel =>
       '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}';
 
-  /// Overdue = past the due date and still not completed.
+  /// Overdue = the due date has passed and the case is still open. A case due
+  /// *today* is due today, not overdue.
   bool get isOverdue =>
-      status != CaseStatus.completed && !dueDate.isAfter(_dateOnly(DateTime.now()));
+      status != CaseStatus.completed && _dateOnly(dueDate).isBefore(_dateOnly(DateTime.now()));
 
   /// Days until the due date (negative = overdue).
   int get daysUntilDue => _dateOnly(dueDate).difference(_dateOnly(DateTime.now())).inDays;

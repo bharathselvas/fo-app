@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,6 +8,12 @@ import '../../core/storage/file_store.dart';
 import '../../core/sync/sync_engine.dart';
 import '../../core/utils/ids.dart';
 
+/// 1x1 transparent PNG written for camera-free evidence so the row has a real
+/// local file: it survives restarts, renders in the dossier, and uploads
+/// through the normal sync queue exactly like a camera capture.
+const kPlaceholderEvidencePng =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
 class FieldVisitController {
   FieldVisitController(this._db, this._queue, this._files);
 
@@ -13,11 +21,19 @@ class FieldVisitController {
   final SyncQueueService _queue;
   final FileStore _files;
 
+  /// The visit this session is editing. Cached so the wizard's form state can
+  /// autosave without the screen holding its own copy.
+  FieldVisit? _currentVisit;
+  FieldVisit? get currentVisit => _currentVisit;
+
   Future<FieldVisit> startVisit({required AssignedTask task, required String officerId}) async {
     final existing = await (_db.select(_db.fieldVisits)
           ..where((t) => t.caseId.equals(task.caseId) & t.status.isNotIn(['SYNCED'])))
         .getSingleOrNull();
-    if (existing != null) return existing;
+    if (existing != null) {
+      _currentVisit = existing;
+      return existing;
+    }
 
     final now = DateTime.now().toUtc();
     final visit = FieldVisit(
@@ -34,6 +50,7 @@ class FieldVisitController {
       updatedAt: now,
     );
     await _db.into(_db.fieldVisits).insert(visit);
+    _currentVisit = visit;
     return visit;
   }
 
@@ -185,6 +202,53 @@ class FieldVisitController {
     await _db.into(_db.evidences).insert(row);
     return row;
   }
+
+  /// Documents picked on the wizard's Documents step, newest first.
+  ///
+  /// The Documents screen merges these into the case dossier so a file the
+  /// officer added in the field is visible next to the office-issued records.
+  Future<List<LocalDocument>> documentsForCase(String caseNo) async {
+    final visit = await (_db.select(_db.fieldVisits)
+          ..where((t) => t.caseId.equals(caseNo) & t.status.isNotIn(['SYNCED'])))
+        .get();
+    if (visit.isEmpty) return [];
+    final ids = visit.map((v) => v.id).toSet();
+    final rows = await _db.select(_db.localDocuments).get();
+    return _newestFirst(rows.where((d) => ids.contains(d.visitId)));
+  }
+
+  static List<LocalDocument> _newestFirst(Iterable<LocalDocument> rows) =>
+      (rows.toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+
+  /// Camera-free capture for emulators and camera-less devices.
+  ///
+  /// Goes through the identical [addEvidence] path as a real photograph, so
+  /// the row lands in `Evidences`, has a readable local file, and is enqueued
+  /// for upload by [submitVisit]. Nothing about the record is a stub — only
+  /// the image bytes are a placeholder.
+  Future<Evidence> addPlaceholderEvidence({
+    required String visitId,
+    required String parcelId,
+    required String officerId,
+    required String type,
+    String? description,
+    double? latitude,
+    double? longitude,
+    double? gpsAccuracy,
+    bool locationAvailable = true,
+  }) =>
+      addEvidence(
+        visitId: visitId,
+        parcelId: parcelId,
+        officerId: officerId,
+        type: type,
+        bytes: base64Decode(kPlaceholderEvidencePng),
+        description: description,
+        latitude: latitude,
+        longitude: longitude,
+        gpsAccuracy: gpsAccuracy,
+        locationAvailable: locationAvailable,
+      );
 
   Future<void> submitVisit(String visitId) async {
     final visit = await (_db.select(_db.fieldVisits)..where((t) => t.id.equals(visitId)))

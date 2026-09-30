@@ -35,14 +35,20 @@ class ConnectivityService {
   ConnectionStatus get status => _status;
 
   Future<void> start() async {
-    _sub ??= _connectivity.onConnectivityChanged.listen(
-      (_) {
-        unawaited(refresh());
-      },
-      // The event channel is unavailable in widget tests / stripped builds;
-      // `refresh()` still re-probes and falls back to OFFLINE.
-      onError: (Object _) {},
-    );
+    // The platform event channel is absent under `flutter test` and in some
+    // stripped builds, where `listen` throws instead of returning an erroring
+    // stream. Treat that as "no push updates" — `refresh()` still re-probes
+    // and falls back to OFFLINE — rather than letting it escape.
+    try {
+      _sub ??= _connectivity.onConnectivityChanged.listen(
+        (_) {
+          unawaited(refresh());
+        },
+        onError: (Object _) {},
+      );
+    } catch (_) {
+      _sub ??= null;
+    }
     await refresh();
   }
 

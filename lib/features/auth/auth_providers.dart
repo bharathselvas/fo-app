@@ -18,7 +18,7 @@ final dbProvider = Provider<AppDatabase>((ref) {
 });
 
 // Helper so tests can override; drift_flutter open path
-QueryExecutor openDatabase() => driftDatabase(name: 'bhoomi_setu_fo');
+QueryExecutor openDatabase() => driftDatabase(name: 'terranex_fo');
 
 final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
 
@@ -47,6 +47,12 @@ final pendingSyncCountProvider = Provider<int>(
 /// Signed-in officer (always populated for the prototype).
 final currentUserProvider = Provider<FieldOfficer>(
   (ref) => ref.watch(foStateProvider).officer,
+);
+
+/// Documents the officer picked during a field visit, watched live so the
+/// Documents screen reflects uploads the moment they are added.
+final visitDocumentsProvider = StreamProvider.family<List<LocalDocument>, String>(
+  (ref, caseNo) => ref.watch(dbProvider).watchVisitDocumentsForCase(caseNo),
 );
 
 /// Prototype sign-in gate: no server, no credentials check — the officer

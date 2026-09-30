@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../core/theme/app_colors.dart';
 import '../data/models/evidence_record.dart';
 
 /// Thumbnail for an evidence record.
@@ -10,21 +11,43 @@ import '../data/models/evidence_record.dart';
 /// Real camera captures render the file; prototype evidence (no file yet)
 /// renders a painted placeholder so the grid never shows a broken image.
 class EvidenceThumb extends StatelessWidget {
-  const EvidenceThumb({super.key, required this.record, this.fit = BoxFit.cover});
+  const EvidenceThumb({
+    super.key,
+    required this.record,
+    this.fit = BoxFit.cover,
+    this.cacheWidth = 320,
+  });
 
   final EvidenceRecord record;
   final BoxFit fit;
 
+  /// Decode target. A three-column evidence grid renders ~120 logical px per
+  /// cell but was decoding the full-resolution camera capture behind it.
+  final int cacheWidth;
+
   @override
   Widget build(BuildContext context) {
     final path = record.filePath;
-    if (path != null && path.isNotEmpty && File(path).existsSync()) {
-      return Image.file(File(path), fit: fit, errorBuilder: (_, __, ___) => _placeholder());
+    // The old build called `File(path).existsSync()` here — a synchronous
+    // filesystem stat on the build path, once per grid cell, per rebuild.
+    // `record.hasPhoto` already reflects that a file was recorded; if the file
+    // has since been deleted, `errorBuilder` covers it.
+    if (record.hasPhoto && path != null && path.isNotEmpty) {
+      return Image.file(
+        File(path),
+        fit: fit,
+        cacheWidth: cacheWidth,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.low,
+        frameBuilder: (context, child, frame, wasSyncLoaded) {
+          if (wasSyncLoaded || frame != null) return child;
+          return const _EvidencePlaceholder(seed: '');
+        },
+        errorBuilder: (_, _, _) => _EvidencePlaceholder(seed: record.id),
+      );
     }
-    return _placeholder();
+    return _EvidencePlaceholder(seed: record.id);
   }
-
-  Widget _placeholder() => _EvidencePlaceholder(seed: record.id);
 }
 
 /// Deterministic "field photo" illustration used for mock evidence.
@@ -35,9 +58,11 @@ class _EvidencePlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _FieldPhotoPainter(seed: seed),
-      child: const SizedBox.expand(),
+    return RepaintBoundary(
+      child: CustomPaint(
+        painter: _FieldPhotoPainter(seed: seed),
+        child: const SizedBox.expand(),
+      ),
     );
   }
 }
@@ -48,6 +73,7 @@ class _FieldPhotoPainter extends CustomPainter {
   final double hue;
 
   static double _hueFor(String seed) {
+    if (seed.isEmpty) return 96;
     var h = 0;
     for (final code in seed.codeUnits) {
       h = (h * 31 + code) & 0xFFFF;
@@ -102,7 +128,7 @@ class _FieldPhotoPainter extends CustomPainter {
       ..lineTo(size.width, size.height * 0.57)
       ..lineTo(size.width, size.height * 0.62)
       ..close();
-    canvas.drawPath(hedge, Paint()..color = const Color(0xFF2E5E2E));
+    canvas.drawPath(hedge, Paint()..color = AppColors.placeholderFoliage);
   }
 
   @override

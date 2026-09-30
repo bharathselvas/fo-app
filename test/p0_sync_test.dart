@@ -3,14 +3,14 @@ import 'dart:io';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:bhoomi_setu_fo/core/database/database.dart';
-import 'package:bhoomi_setu_fo/core/network/api_client.dart';
-import 'package:bhoomi_setu_fo/core/network/connectivity_service.dart';
-import 'package:bhoomi_setu_fo/core/network/health_service.dart';
-import 'package:bhoomi_setu_fo/core/storage/file_store.dart';
-import 'package:bhoomi_setu_fo/core/sync/sync_engine.dart';
-import 'package:bhoomi_setu_fo/core/utils/ids.dart';
-import 'package:bhoomi_setu_fo/features/field_visit/field_visit_controller.dart';
+import 'package:terranex_fo/core/database/database.dart';
+import 'package:terranex_fo/core/network/api_client.dart';
+import 'package:terranex_fo/core/network/connectivity_service.dart';
+import 'package:terranex_fo/core/network/health_service.dart';
+import 'package:terranex_fo/core/sync/sync_engine.dart';
+import 'package:terranex_fo/core/utils/ids.dart';
+import 'package:terranex_fo/features/field_visit/field_visit_controller.dart';
+import 'support/memory_file_store.dart';
 
 class FakeConnectivity extends ConnectivityService {
   FakeConnectivity() : super(HealthService());
@@ -147,49 +147,6 @@ class FakeApiClient implements ApiClient {
       };
     }
     return {};
-  }
-}
-
-class MemoryFileStore extends FileStore {
-  final Map<String, List<int>> files = {};
-
-  @override
-  Future<String> saveEvidence({
-    required String visitId,
-    required String evidenceId,
-    required List<int> bytes,
-    String extension = 'jpg',
-  }) async {
-    final path = '/mem/evidence/$visitId/$evidenceId.$extension';
-    files[path] = bytes;
-    return path;
-  }
-
-  @override
-  Future<String> saveDocument({
-    required String visitId,
-    required String documentId,
-    required List<int> bytes,
-    String extension = 'pdf',
-  }) async {
-    final path = '/mem/documents/$visitId/$documentId.$extension';
-    files[path] = bytes;
-    return path;
-  }
-
-  @override
-  Future<bool> exists(String path) async => files.containsKey(path);
-
-  @override
-  Future<List<int>> readBytes(String path) async {
-    final bytes = files[path];
-    if (bytes == null) throw StateError('missing $path');
-    return bytes;
-  }
-
-  @override
-  Future<void> deleteIfExists(String path) async {
-    files.remove(path);
   }
 }
 

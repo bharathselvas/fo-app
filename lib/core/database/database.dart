@@ -169,4 +169,18 @@ class AppDatabase extends _$AppDatabase {
   MigrationStrategy get migration => MigrationStrategy(
         onCreate: (m) async => await m.createAll(),
       );
+
+  /// Watches every local document belonging to a case's open (not yet synced)
+  /// visits, newest first — used to merge field-picked files into the case
+  /// dossier on the Documents screen.
+  Stream<List<LocalDocument>> watchVisitDocumentsForCase(String caseNo) {
+    final openVisits = selectOnly(fieldVisits)
+      ..addColumns([fieldVisits.id])
+      ..where(fieldVisits.caseId.equals(caseNo) &
+          fieldVisits.status.isNotIn(['SYNCED']));
+    return (select(localDocuments)
+          ..where((d) => d.visitId.isInQuery(openVisits))
+          ..orderBy([(d) => OrderingTerm.desc(d.createdAt)]))
+        .watch();
+  }
 }

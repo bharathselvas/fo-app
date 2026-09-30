@@ -2,12 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/connectivity_service.dart';
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/tokens.dart';
 import '../../data/models/enums.dart';
-import '../../data/models/land_case.dart';
+import '../../data/models/notification_item.dart';
 import '../../services/fo_providers.dart';
-import '../../services/mock_data_service.dart' show CaseSort;
+import '../../services/mock_data_service.dart' show CaseSort, DashboardStats;
 import '../../widgets/common.dart';
-import '../../widgets/status_widgets.dart';
+import '../../widgets/lazy_tab_stack.dart';
+import '../../widgets/motion.dart';
+import '../../widgets/screen_header.dart';
 import '../auth/auth_providers.dart';
 import '../cases/case_card.dart';
 import '../cases/case_detail_screen.dart';
@@ -22,43 +26,68 @@ import '../tasks/tasks_screen.dart';
 final _tabIndexProvider = StateProvider<int>((_) => 0);
 
 /// Root shell: Home · Cases · Map · Sync · More.
+///
+/// The five tabs live in an [IndexedStack]. Previously they were a plain list
+/// literal rebuilt inside `build()`, so every tap disposed and recreated all
+/// five subtrees: scroll positions reset, list state was lost, and the Map tab
+/// re-fired a GPS probe on each switch. [IndexedStack] keeps every tab alive and
+/// only repaints the selected one.
+///
+/// The shell owns the only [Scaffold]. Each tab renders a [ScreenHeader] plus
+/// its content — the previous three-nested-`Scaffold` layout double-applied
+/// safe-area insets and put the connection banner underneath the app bar.
 class HomeShell extends ConsumerWidget {
   const HomeShell({super.key});
+
+  static const _destinations = <_TabSpec>[
+    _TabSpec('Home', Icons.home_outlined, Icons.home),
+    _TabSpec('Cases', Icons.folder_outlined, Icons.folder),
+    _TabSpec('Map', Icons.map_outlined, Icons.map),
+    _TabSpec('Sync', Icons.sync_outlined, Icons.sync),
+    _TabSpec('More', Icons.more_horiz, Icons.more_horiz),
+  ];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tab = ref.watch(_tabIndexProvider);
     final pending = ref.watch(pendingSyncCountProvider);
 
-    final screens = [
-      HomeDashboard(onOpenTab: (i) => ref.read(_tabIndexProvider.notifier).state = i),
-      const CasesTab(),
-      const MapTab(),
-      const SyncCenterScreen(),
-      const MoreScreen(),
-    ];
+    void go(int i) => ref.read(_tabIndexProvider.notifier).state = i;
 
     return Scaffold(
-      body: Column(
-        children: [
-          ConnectionBanner(pendingCount: pending),
-          Expanded(child: screens[tab]),
-        ],
+      body: LazyTabStack(
+        index: tab,
+        builder: (_, i) => switch (i) {
+          0 => HomeDashboard(onOpenTab: go),
+          1 => const CasesTab(),
+          2 => const MapTab(),
+          3 => const SyncCenterScreen(),
+          _ => const MoreScreen(),
+        },
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: tab,
-        type: BottomNavigationBarType.fixed,
-        onTap: (i) => ref.read(_tabIndexProvider.notifier).state = i,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_outlined), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.folder_outlined), label: 'Cases'),
-          BottomNavigationBarItem(icon: Icon(Icons.map_outlined), label: 'Map'),
-          BottomNavigationBarItem(icon: Icon(Icons.sync_outlined), label: 'Sync'),
-          BottomNavigationBarItem(icon: Icon(Icons.more_horiz), label: 'More'),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: tab,
+        onDestinationSelected: go,
+        destinations: [
+          for (final d in _destinations)
+            NavigationDestination(
+              icon: d.label == 'Sync' && pending > 0
+                  ? Badge(label: Text('$pending'), child: Icon(d.icon))
+                  : Icon(d.icon),
+              selectedIcon: Icon(d.selectedIcon),
+              label: d.label,
+            ),
         ],
       ),
     );
   }
+}
+
+class _TabSpec {
+  const _TabSpec(this.label, this.icon, this.selectedIcon);
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
 }
 
 // ---------------------------------------------------------------- Dashboard
@@ -75,162 +104,247 @@ class HomeDashboard extends ConsumerWidget {
     final state = ref.watch(foStateProvider);
     final pending = ref.watch(pendingSyncCountProvider);
     final conn = ref.watch(connectionProvider).valueOrNull ?? ConnectionStatus.offline;
+    final theme = Theme.of(context);
 
-    final todayTasks = [...state.dueTodayTasks, ...state.openTasks]
-        .where((t) => !state.dueTodayTasks.contains(t))
-        .toList()
+    final seen = {...state.dueTodayTasks.map((t) => t.id)};
+    final todayTasks = [...state.dueTodayTasks, ...state.openTasks.where((t) => seen.add(t.id))]
       ..sort((a, b) {
         final byDue = a.dueDate.compareTo(b.dueDate);
         return byDue != 0 ? byDue : a.priority.rank.compareTo(b.priority.rank);
       });
     final showTasks = todayTasks.take(3).toList();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('BHOOMI SETU'),
-        actions: [
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: StatusChip(
-                label: _connLabel(conn),
-                color: _connColor(conn),
-                icon: Icons.circle,
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Notifications',
-            onPressed: () => NotificationsScreen.open(context),
-            icon: Badge(
-              isLabelVisible: stats.unreadNotifications > 0,
-              label: Text('${stats.unreadNotifications}'),
-              child: const Icon(Icons.notifications_outlined),
-            ),
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: () => ref.read(connectivityServiceProvider).refresh(),
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _greetingCard(context, officer.name, officer.designation, officer.department, officer.assignedArea, officer.officerId),
-            const SizedBox(height: 16),
-            _statsBlock(context, stats, pending, ref),
-            const SizedBox(height: 20),
-            _sectionHeader(
-              context,
-              "TODAY'S TASKS",
-              actionLabel: 'VIEW ALL',
-              onAction: () => TasksScreen.open(context),
-            ),
-            const SizedBox(height: 4),
-            if (showTasks.isEmpty)
-              const EmptyState(
-                icon: Icons.task_alt,
-                title: 'No Tasks Due Today',
-                message: 'You are clear for today. Check the case list for upcoming work.',
-              )
-            else
-              ...showTasks.map((t) => TaskCard(task: t)),
-            const SizedBox(height: 12),
-            _syncCard(context, onOpenTab, pending, conn),
-            const SizedBox(height: 20),
-            _sectionHeader(
-              context,
-              'NOTIFICATIONS',
-              actionLabel: 'VIEW ALL',
-              onAction: () => NotificationsScreen.open(context),
-            ),
-            const SizedBox(height: 4),
-            if (state.notifications.isEmpty)
-              const EmptyState(
-                icon: Icons.notifications_none,
-                title: 'No Notifications',
-                message: 'Case, task and sync updates will appear here.',
-              )
-            else
-              ...state.notifications.take(3).map(
-                    (n) => Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          radius: 16,
-                          backgroundColor: n.kind.color.withValues(alpha: 0.14),
-                          child: Icon(Icons.notifications, size: 16, color: n.kind.color),
-                        ),
-                        title: Text(n.title,
-                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-                        subtitle: Text(n.body,
-                            maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5)),
-                        trailing: n.read ? null : const Icon(Icons.fiber_manual_record, size: 10, color: Color(0xFF2E7D32)),
-                        onTap: () => NotificationsScreen.open(context),
-                      ),
-                    ),
-                  ),
-            const SizedBox(height: 12),
-            Center(
-              child: TextButton.icon(
-                onPressed: () => ProfileScreen.open(context),
-                icon: const Icon(Icons.badge_outlined),
-                label: const Text('MY PROFILE'),
+    return Column(
+      children: [
+        BrandHeader(
+          actions: [
+            IconButton(
+              tooltip: 'Notifications',
+              onPressed: () => NotificationsScreen.open(context),
+              icon: Badge(
+                isLabelVisible: stats.unreadNotifications > 0,
+                label: Text('${stats.unreadNotifications}'),
+                child: const Icon(Icons.notifications_outlined),
               ),
             ),
           ],
         ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () => ref.read(connectivityServiceProvider).refresh(),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.lg, Insets.lg, Insets.xxl),
+              children: [
+                _greetingCard(context, officer),
+                const Gap(Insets.lg),
+                _statsBlock(context, stats, pending, ref),
+                const Gap(Insets.xxl),
+                _sectionHeader(
+                  context,
+                  "TODAY'S TASKS",
+                  actionLabel: 'VIEW ALL',
+                  onAction: () => TasksScreen.open(context),
+                ),
+                const Gap(Insets.md),
+                if (showTasks.isEmpty)
+                  const EmptyState(
+                    icon: Icons.task_alt,
+                    title: 'No Tasks Due Today',
+                    message: 'You are clear for today. Check the case list for upcoming work.',
+                  )
+                else
+                  for (var i = 0; i < showTasks.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: Insets.md),
+                      child: TaskCard(task: showTasks[i]),
+                    ),
+                const Gap(Insets.sm),
+                _syncCard(context, onOpenTab, pending, conn),
+                const Gap(Insets.xxl),
+                _sectionHeader(
+                  context,
+                  'NOTIFICATIONS',
+                  actionLabel: 'VIEW ALL',
+                  onAction: () => NotificationsScreen.open(context),
+                ),
+                const Gap(Insets.md),
+                if (state.notifications.isEmpty)
+                  const EmptyState(
+                    icon: Icons.notifications_none,
+                    title: 'No Notifications',
+                    message: 'Case, task and sync updates will appear here.',
+                  )
+                else
+                  for (var i = 0; i < state.notifications.take(3).length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: Insets.sm),
+                      child: _notificationRow(context, state.notifications[i]),
+                    ),
+                const Gap(Insets.lg),
+                Center(
+                  child: TextButton.icon(
+                    onPressed: () => ProfileScreen.open(context),
+                    icon: const Icon(Icons.badge_outlined, size: 18),
+                    label: const Text('MY PROFILE'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: theme.textTheme.titleSmall?.color,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _notificationRow(BuildContext context, AppNotification n) {
+    final theme = Theme.of(context);
+
+    return TappableCard(
+      onTap: () => NotificationsScreen.open(context),
+      padding: const EdgeInsets.symmetric(horizontal: Insets.md, vertical: Insets.md),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: n.kind.color.withValues(alpha: 0.12),
+              borderRadius: Radii.smAll,
+            ),
+            child: Icon(Icons.notifications_none, size: 17, color: n.kind.color),
+          ),
+          const Gap(Insets.md, horizontal: true),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  n.title,
+                  style: theme.textTheme.titleMedium!.copyWith(fontSize: 14),
+                ),
+                const Gap(2),
+                Text(
+                  n.body,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall!.copyWith(fontSize: 12.5),
+                ),
+              ],
+            ),
+          ),
+          if (!n.read) ...[
+            const Gap(Insets.sm, horizontal: true),
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: StatusDot(color: AppColors.brand, size: 8),
+            ),
+          ],
+        ],
       ),
     );
   }
 
-  Widget _greetingCard(
-    BuildContext context,
-    String name,
-    String designation,
-    String department,
-    String area,
-    String officerId,
-  ) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 26,
-              backgroundColor: const Color(0xFF1B5E20),
-              child: Text(
-                name.isEmpty
-                    ? '?'
-                    : name.split(' ').map((p) => p.isEmpty ? '' : p[0]).take(2).join(),
-                style: const TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16),
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '${_greetingWord()}, ${name.split(' ').first}',
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
-                  ),
-                  Text(
-                    '$designation · $department',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Jurisdiction: $area',
-                    style: TextStyle(fontSize: 12.5, color: Colors.grey[600]),
-                  ),
-                ],
-              ),
-            ),
-            StatusChip(label: officerId, color: Colors.indigo, icon: Icons.badge_outlined),
-          ],
+  Widget _greetingCard(BuildContext context, FieldOfficer officer) {
+    final theme = Theme.of(context);
+    final initials = officer.name.isEmpty
+        ? '?'
+        : officer.name
+            .split(' ')
+            .where((p) => p.isNotEmpty)
+            .take(2)
+            .map((p) => p[0])
+            .join();
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: Radii.lgAll,
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppColors.brandShadow, AppColors.brand, AppColors.brandBright],
         ),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.brand.withValues(alpha: 0.22),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(Insets.lg),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white.withValues(alpha: 0.28)),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              initials,
+              style: theme.textTheme.titleLarge!.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const Gap(Insets.md, horizontal: true),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${_greetingWord()}, ${officer.name.split(' ').first}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleLarge!.copyWith(color: Colors.white),
+                ),
+                const Gap(2),
+                Text(
+                  officer.designation,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall!.copyWith(
+                    color: Colors.white.withValues(alpha: 0.88),
+                  ),
+                ),
+                const Gap(1),
+                Text(
+                  officer.assignedArea,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall!.copyWith(
+                    fontSize: 12,
+                    color: Colors.white.withValues(alpha: 0.68),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Gap(Insets.sm, horizontal: true),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: Insets.sm, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.16),
+              borderRadius: Radii.smAll,
+            ),
+            child: Text(
+              officer.officerId,
+              style: theme.textTheme.labelSmall!.copyWith(
+                color: Colors.white,
+                fontSize: 10.5,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -242,7 +356,9 @@ class HomeDashboard extends ConsumerWidget {
     return 'Good evening';
   }
 
-  Widget _statsBlock(BuildContext context, dynamic stats, int pending, WidgetRef ref) {
+  Widget _statsBlock(BuildContext context, DashboardStats stats, int pending, WidgetRef ref) {
+    final emphasise = stats.overdue > 0;
+
     return Column(
       children: [
         Row(
@@ -250,60 +366,47 @@ class HomeDashboard extends ConsumerWidget {
             StatTile(
               value: '${stats.assignedCases}',
               label: 'Cases',
-              color: Colors.indigo,
+              color: AppColors.info,
               onTap: () => ref.read(_tabIndexProvider.notifier).state = 1,
             ),
-            const SizedBox(width: 8),
+            const Gap(Insets.sm, horizontal: true),
             StatTile(
               value: '${stats.pendingVerification}',
               label: 'Pending',
-              color: const Color(0xFFF57F17),
+              color: AppColors.warning,
               onTap: () => ref.read(_tabIndexProvider.notifier).state = 1,
             ),
-            const SizedBox(width: 8),
+            const Gap(Insets.sm, horizontal: true),
             StatTile(
               value: '${stats.completed}',
               label: 'Completed',
-              color: const Color(0xFF2E7D32),
-              onTap: () => ref.read(_tabIndexProvider.notifier).state = 1,
-            ),
-            const SizedBox(width: 8),
-            StatTile(
-              value: '${stats.overdue}',
-              label: 'Overdue',
-              color: const Color(0xFFB71C1C),
+              color: AppColors.success,
               onTap: () => ref.read(_tabIndexProvider.notifier).state = 1,
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        const Gap(Insets.sm),
         Row(
           children: [
             StatTile(
-              value: '${stats.openTasks}',
-              label: 'Open tasks',
-              color: Colors.blueGrey,
-              onTap: () => TasksScreen.open(context),
+              value: '${stats.overdue}',
+              label: 'Overdue',
+              color: AppColors.danger,
+              emphasise: emphasise,
+              onTap: () => ref.read(_tabIndexProvider.notifier).state = 1,
             ),
-            const SizedBox(width: 8),
+            const Gap(Insets.sm, horizontal: true),
             StatTile(
               value: '${stats.dueToday}',
               label: 'Due today',
-              color: Colors.deepOrange,
+              color: AppColors.violet,
               onTap: () => TasksScreen.open(context),
             ),
-            const SizedBox(width: 8),
-            StatTile(
-              value: '${stats.unreadNotifications}',
-              label: 'Alerts',
-              color: Colors.purple,
-              onTap: () => NotificationsScreen.open(context),
-            ),
-            const SizedBox(width: 8),
+            const Gap(Insets.sm, horizontal: true),
             StatTile(
               value: '$pending',
               label: 'Queued',
-              color: Colors.teal,
+              color: AppColors.teal,
               onTap: () => ref.read(_tabIndexProvider.notifier).state = 3,
             ),
           ],
@@ -312,48 +415,65 @@ class HomeDashboard extends ConsumerWidget {
     );
   }
 
-  Widget _syncCard(BuildContext context, void Function(int) onOpenTab, int pending, ConnectionStatus conn) {
-    final (label, color) = switch (conn) {
+  Widget _syncCard(
+    BuildContext context,
+    void Function(int) onOpenTab,
+    int pending,
+    ConnectionStatus conn,
+  ) {
+    final theme = Theme.of(context);
+    final (label, color, icon) = switch (conn) {
       ConnectionStatus.online => pending == 0
-          ? ('ONLINE — SYNCED', Color(0xFF2E7D32))
-          : ('ONLINE — $pending ITEMS PENDING', Color(0xFF1565C0)),
-      ConnectionStatus.offline => ('OFFLINE — $pending ITEMS PENDING', Color(0xFFB71C1C)),
-      ConnectionStatus.syncing => ('SYNCING…', Color(0xFFF57F17)),
-      ConnectionStatus.serverUnavailable => ('SERVER UNAVAILABLE — OFFLINE MODE', Color(0xFFE65100)),
-    };
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Icon(
-              conn == ConnectionStatus.online ? Icons.cloud_done : Icons.cloud_off,
-              color: color,
-              size: 30,
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5, color: color)),
-                  const SizedBox(height: 4),
-                  Text(
-                    pending == 0
-                        ? 'All field records are uploaded.'
-                        : '$pending record${pending == 1 ? '' : 's'} waiting to upload from this device.',
-                    style: TextStyle(fontSize: 12.5, color: Colors.grey[700]),
-                  ),
-                ],
-              ),
-            ),
-            FilledButton.tonal(
-              onPressed: () => onOpenTab(3),
-              child: const Text('SYNC'),
-            ),
-          ],
+          ? ('ONLINE — SYNCED', AppColors.success, Icons.cloud_done_outlined)
+          : ('ONLINE — $pending PENDING', AppColors.warning, Icons.cloud_upload_outlined),
+      ConnectionStatus.offline => (
+          'OFFLINE — $pending PENDING',
+          AppColors.danger,
+          Icons.cloud_off_outlined
         ),
+      ConnectionStatus.syncing => ('SYNCING…', AppColors.warning, Icons.cloud_sync_outlined),
+      ConnectionStatus.serverUnavailable => (
+          'SERVER UNAVAILABLE',
+          AppColors.serverDown,
+          Icons.cloud_off_outlined
+        ),
+    };
+
+    return TappableCard(
+      onTap: () => onOpenTab(3),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.10),
+              borderRadius: Radii.mdAll,
+            ),
+            child: Icon(icon, color: color, size: 22),
+          ),
+          const Gap(Insets.md, horizontal: true),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: theme.textTheme.labelMedium!.copyWith(color: color, letterSpacing: 0.6),
+                ),
+                const Gap(2),
+                Text(
+                  pending == 0
+                      ? 'All field records are uploaded.'
+                      : '$pending record${pending == 1 ? '' : 's'} waiting to upload from this device.',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          const Gap(Insets.sm, horizontal: true),
+          const Icon(Icons.chevron_right, color: AppColors.textTertiary),
+        ],
       ),
     );
   }
@@ -366,34 +486,28 @@ class HomeDashboard extends ConsumerWidget {
   }) {
     return Row(
       children: [
-        Text(
-          title,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.1,
-                color: Colors.grey[800],
-              ),
+        // Flexible so a large text scale cannot push the action off-screen.
+        Expanded(
+          child: Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
         ),
-        const Spacer(),
         if (actionLabel != null)
-          TextButton(onPressed: onAction, child: Text(actionLabel)),
+          TextButton(
+            onPressed: onAction,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: Insets.sm),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(actionLabel),
+          ),
       ],
     );
   }
-
-  String _connLabel(ConnectionStatus s) => switch (s) {
-        ConnectionStatus.online => 'ONLINE',
-        ConnectionStatus.offline => 'OFFLINE',
-        ConnectionStatus.syncing => 'SYNCING',
-        ConnectionStatus.serverUnavailable => 'SERVER DOWN',
-      };
-
-  Color _connColor(ConnectionStatus s) => switch (s) {
-        ConnectionStatus.online => Colors.green.shade700,
-        ConnectionStatus.offline => Colors.red.shade700,
-        ConnectionStatus.syncing => Colors.orange.shade800,
-        ConnectionStatus.serverUnavailable => Colors.deepOrange.shade800,
-      };
 }
 
 // ---------------------------------------------------------------- Cases tab
@@ -408,128 +522,157 @@ class CasesTab extends ConsumerWidget {
     final status = ref.watch(caseStatusFilterProvider);
     final priority = ref.watch(casePriorityFilterProvider);
     final sort = ref.watch(caseSortProvider);
+    final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Cases'),
-        actions: [
-          PopupMenuButton<CaseSort>(
-            tooltip: 'Sort',
-            icon: const Icon(Icons.sort),
-            initialValue: sort,
-            onSelected: (s) => ref.read(caseSortProvider.notifier).state = s,
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: CaseSort.dueDate, child: Text('Due date')),
-              PopupMenuItem(value: CaseSort.priority, child: Text('Priority')),
-              PopupMenuItem(value: CaseSort.updated, child: Text('Last updated')),
-              PopupMenuItem(value: CaseSort.caseNo, child: Text('Case number')),
+    final filtering = query.isNotEmpty || status != null || priority != null;
+
+    return Column(
+      children: [
+        ScreenHeader(
+          title: 'Cases',
+          subtitle: cases.isEmpty ? null : '${cases.length} in your jurisdiction',
+          actions: [
+            PopupMenuButton<CaseSort>(
+              tooltip: 'Sort',
+              icon: const Icon(Icons.sort),
+              initialValue: sort,
+              onSelected: (s) => ref.read(caseSortProvider.notifier).state = s,
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: CaseSort.dueDate, child: Text('Due date')),
+                PopupMenuItem(value: CaseSort.priority, child: Text('Priority')),
+                PopupMenuItem(value: CaseSort.updated, child: Text('Last updated')),
+                PopupMenuItem(value: CaseSort.caseNo, child: Text('Case number')),
+              ],
+            ),
+          ],
+        ),
+        _searchField(context, ref, query),
+        _statusStrip(context, ref, status, priority),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.xs, Insets.lg, 0),
+          child: Row(
+            children: [
+              Text('${cases.length} CASE${cases.length == 1 ? '' : 'S'}', style: theme.textTheme.labelSmall),
+              const Spacer(),
+              if (filtering)
+                TextButton(
+                  onPressed: () {
+                    ref.read(caseSearchQueryProvider.notifier).state = '';
+                    ref.read(caseStatusFilterProvider.notifier).state = null;
+                    ref.read(casePriorityFilterProvider.notifier).state = null;
+                  },
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: Insets.sm),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('RESET'),
+                ),
             ],
           ),
-        ],
+        ),
+        Expanded(
+          child: cases.isEmpty
+              ? EmptyState(
+                  icon: filtering ? Icons.search_off : Icons.folder_open,
+                  title: filtering ? 'No Matching Cases' : 'No Cases Assigned',
+                  message: filtering
+                      ? 'Try a different search term or clear the filters.'
+                      : 'Assigned land acquisition cases will appear here.',
+                )
+              : ListView.builder(
+                  key: const PageStorageKey('cases-list'),
+                  padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.sm, Insets.lg, Insets.xxl),
+                  itemCount: cases.length,
+                  itemBuilder: (_, i) => Padding(
+                    key: ValueKey(cases[i].caseNo),
+                    padding: const EdgeInsets.only(bottom: Insets.md),
+                    child: CaseCard(caseData: cases[i]),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _searchField(BuildContext context, WidgetRef ref, String query) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.md, Insets.lg, Insets.sm),
+      child: TextField(
+        onChanged: (v) => ref.read(caseSearchQueryProvider.notifier).state = v,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: 'Search case, village, survey no, owner…',
+          prefixIcon: const Icon(Icons.search, size: 20),
+          suffixIcon: query.isEmpty
+              ? null
+              : IconButton(
+                  tooltip: 'Clear',
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () => ref.read(caseSearchQueryProvider.notifier).state = '',
+                ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: Insets.lg, vertical: 14),
+        ),
       ),
-      body: Column(
+    );
+  }
+
+  Widget _statusStrip(
+    BuildContext context,
+    WidgetRef ref,
+    CaseStatus? status,
+    CasePriority? priority,
+  ) {
+    const statuses = [
+      CaseStatus.verificationPending,
+      CaseStatus.inProgress,
+      CaseStatus.overdue,
+      CaseStatus.compensationPending,
+      CaseStatus.awaitingDocuments,
+      CaseStatus.rrVerification,
+      CaseStatus.possessionPending,
+      CaseStatus.completed,
+    ];
+
+    return SizedBox(
+      height: 52,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: Insets.md),
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: TextField(
-              onChanged: (v) => ref.read(caseSearchQueryProvider.notifier).state = v,
-              decoration: InputDecoration(
-                hintText: 'Search case, village, survey no, owner…',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () => ref.read(caseSearchQueryProvider.notifier).state = '',
-                      ),
-                isDense: true,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: Insets.sm),
+            child: ChoiceChip(
+              label: const Text('ALL'),
+              selected: status == null && priority == null,
+              onSelected: (_) {
+                ref.read(caseStatusFilterProvider.notifier).state = null;
+                ref.read(casePriorityFilterProvider.notifier).state = null;
+              },
+            ),
+          ),
+          for (final s in statuses)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: Insets.sm),
+              child: ChoiceChip(
+                label: Text(s.label),
+                selected: status == s,
+                avatar: status == s
+                    ? StatusDot(color: s.color, size: 6)
+                    : StatusDot(color: s.color.withValues(alpha: 0.4), size: 6),
+                onSelected: (on) =>
+                    ref.read(caseStatusFilterProvider.notifier).state = on ? s : null,
               ),
             ),
-          ),
-          SizedBox(
-            height: 56,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                  child: ChoiceChip(
-                    label: const Text('ALL'),
-                    selected: status == null && priority == null,
-                    onSelected: (_) {
-                      ref.read(caseStatusFilterProvider.notifier).state = null;
-                      ref.read(casePriorityFilterProvider.notifier).state = null;
-                    },
-                  ),
-                ),
-                for (final s in const [
-                  CaseStatus.verificationPending,
-                  CaseStatus.inProgress,
-                  CaseStatus.overdue,
-                  CaseStatus.completed,
-                ])
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                    child: ChoiceChip(
-                      label: Text(s.label.toUpperCase()),
-                      selected: status == s,
-                      onSelected: (on) =>
-                          ref.read(caseStatusFilterProvider.notifier).state = on ? s : null,
-                    ),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                  child: ChoiceChip(
-                    label: const Text('HIGH PRIORITY'),
-                    selected: priority == CasePriority.high,
-                    onSelected: (on) =>
-                        ref.read(casePriorityFilterProvider.notifier).state =
-                            on ? CasePriority.high : null,
-                  ),
-                ),
-              ],
-            ),
-          ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                Text(
-                  '${cases.length} CASE${cases.length == 1 ? '' : 'S'}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.6,
-                    color: Colors.grey[700],
-                  ),
-                ),
-                const Spacer(),
-                if (query.isNotEmpty || status != null || priority != null)
-                  TextButton(
-                    onPressed: () {
-                      ref.read(caseSearchQueryProvider.notifier).state = '';
-                      ref.read(caseStatusFilterProvider.notifier).state = null;
-                      ref.read(casePriorityFilterProvider.notifier).state = null;
-                    },
-                    child: const Text('RESET'),
-                  ),
-              ],
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: Insets.sm),
+            child: ChoiceChip(
+              label: const Text('HIGH PRIORITY'),
+              selected: priority == CasePriority.high,
+              onSelected: (on) =>
+                  ref.read(casePriorityFilterProvider.notifier).state =
+                      on ? CasePriority.high : null,
             ),
-          ),
-          Expanded(
-            child: cases.isEmpty
-                ? const EmptyState(
-                    icon: Icons.search_off,
-                    title: 'No Matching Cases',
-                    message: 'Try a different search term or clear the filters.',
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                    itemCount: cases.length,
-                    itemBuilder: (_, i) => CaseCard(caseData: cases[i]),
-                  ),
           ),
         ],
       ),
@@ -552,69 +695,109 @@ class _MapTabState extends ConsumerState<MapTab> {
   @override
   Widget build(BuildContext context) {
     final cases = ref.watch(foStateProvider).cases;
+    final theme = Theme.of(context);
+
     if (cases.isEmpty) {
-      return const Scaffold(body: EmptyState(icon: Icons.map, title: 'No Parcels', message: 'No parcels to display.'));
+      return const Column(
+        children: [
+          ScreenHeader(title: 'Map'),
+          Expanded(
+            child: EmptyState(
+              icon: Icons.map_outlined,
+              title: 'No Parcels',
+              message: 'No parcels are available to display on the map.',
+            ),
+          ),
+        ],
+      );
     }
-    LandCase selected = cases.firstWhere(
+
+    final selected = cases.firstWhere(
       (c) => c.caseNo == _caseNo,
       orElse: () => cases.first,
     );
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Map')),
-      body: Column(
-        children: [
-          SizedBox(
-            height: 56,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              children: [
-                for (final c in cases)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: ChoiceChip(
-                      label: Text(c.parcelId, style: const TextStyle(fontSize: 12.5)),
-                      selected: c.caseNo == selected.caseNo,
-                      onSelected: (_) => setState(() => _caseNo = c.caseNo),
-                    ),
-                  ),
-              ],
-            ),
+    return Column(
+      children: [
+        ScreenHeader(
+          title: 'Map',
+          subtitle: '${cases.length} parcel${cases.length == 1 ? '' : 's'}',
+        ),
+        SizedBox(
+          height: 52,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: Insets.md, vertical: Insets.sm),
+            itemCount: cases.length,
+            itemBuilder: (_, i) {
+              final c = cases[i];
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: ChoiceChip(
+                  label: Text(c.parcelId),
+                  selected: c.caseNo == selected.caseNo,
+                  onSelected: (_) => setState(() => _caseNo = c.caseNo),
+                ),
+              );
+            },
           ),
-          Expanded(
-            child: ParcelMapScreen(caseData: selected, embedded: true),
+        ),
+        // Keyed so switching parcels rebuilds the map with the new geometry
+        // instead of mutating a controller that may already be attached.
+        Expanded(
+          child: ParcelMapScreen(
+            key: ValueKey(selected.caseNo),
+            caseData: selected,
+            embedded: true,
           ),
-          SafeArea(
+        ),
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            border: Border(top: BorderSide(color: AppColors.border)),
+          ),
+          child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.md, Insets.lg, Insets.md),
               child: Row(
                 children: [
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(selected.caseNo,
-                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                        Text(
+                          selected.caseNo,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const Gap(2),
                         Text(
                           '${selected.village} · Survey ${selected.surveyNo}',
-                          style: TextStyle(fontSize: 12.5, color: Colors.grey[700]),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
                         ),
                       ],
                     ),
                   ),
+                  const Gap(Insets.md, horizontal: true),
                   FilledButton.icon(
                     onPressed: () => CaseDetailScreen.open(context, caseNo: selected.caseNo),
-                    icon: const Icon(Icons.folder_open),
+                    icon: const Icon(Icons.folder_open, size: 18),
                     label: const Text('OPEN CASE'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 46),
+                      padding: const EdgeInsets.symmetric(horizontal: Insets.lg),
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

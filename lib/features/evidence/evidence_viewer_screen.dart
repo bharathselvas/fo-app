@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_routes.dart';
+import '../../core/theme/tokens.dart';
 import '../../data/models/enums.dart';
 import '../../data/models/evidence_record.dart';
 import '../../services/fo_providers.dart';
 import '../../widgets/common.dart';
 import '../../widgets/evidence_thumb.dart';
-import '../../widgets/status_widgets.dart';
 
 /// Full-screen viewer for one piece of captured field evidence.
 class EvidenceViewerScreen extends ConsumerWidget {
@@ -19,7 +21,7 @@ class EvidenceViewerScreen extends ConsumerWidget {
 
   static void open(BuildContext context, {required EvidenceRecord record}) {
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => EvidenceViewerScreen(recordId: record.id)),
+      AppRoutes.zoom(EvidenceViewerScreen(recordId: record.id)),
     );
   }
 
@@ -40,92 +42,106 @@ class EvidenceViewerScreen extends ConsumerWidget {
     }
 
     final captured = DateFormat('d MMM yyyy, h:mm a').format(record.capturedAt);
+    final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppColors.viewerBackground,
       appBar: AppBar(
-        backgroundColor: Colors.black,
+        backgroundColor: AppColors.viewerBackground,
         foregroundColor: Colors.white,
+        systemOverlayStyle: null,
         title: Text('Evidence ${record.number}'),
         actions: [
-          StatusChip(
-            label: record.uploadStatus.label,
-            color: record.uploadStatus.color,
-            icon: record.uploadStatus.label == 'SYNCED' ? Icons.cloud_done : Icons.cloud_upload,
+          Padding(
+            padding: const EdgeInsets.only(right: Insets.lg),
+            child: Center(
+              child: AppChip(
+                label: record.uploadStatus.label,
+                color: record.uploadStatus.color,
+                filled: true,
+                icon: record.uploadStatus == UploadStatus.synced
+                    ? Icons.cloud_done
+                    : Icons.cloud_upload,
+              ),
+            ),
           ),
-          const SizedBox(width: 12),
         ],
       ),
       body: Column(
         children: [
           Expanded(
-            child: Hero(
-              tag: 'evidence_${record.id}',
+            child: Center(
               child: record.hasPhoto
                   ? Image.file(
                       File(record.filePath!),
                       fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => EvidenceThumb(record: record),
+                      filterQuality: FilterQuality.medium,
+                      // Decoding a full-resolution capture for a viewer that
+                      // is screen-sized was wasting memory on every open.
+                      cacheWidth: MediaQuery.sizeOf(context).width.round() * 2,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, _, _) => EvidenceThumb(record: record),
                     )
                   : EvidenceThumb(record: record, fit: BoxFit.contain),
             ),
           ),
           Container(
             width: double.infinity,
-            color: const Color(0xFF121212),
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            decoration: const BoxDecoration(
+              color: AppColors.viewerFooter,
+              border: Border(top: BorderSide(color: AppColors.viewerDivider)),
+            ),
+            padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.lg, Insets.lg, Insets.sm),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   record.type.toUpperCase(),
-                  style: const TextStyle(
-                    color: Color(0xFF81C784),
-                    fontWeight: FontWeight.w800,
+                  style: theme.textTheme.labelSmall!.copyWith(
+                    color: AppColors.viewerPositive,
                     letterSpacing: 1.1,
-                    fontSize: 12,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const Gap(Insets.sm),
                 Text(
                   record.caption,
-                  style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.4),
+                  style: theme.textTheme.bodyLarge!.copyWith(color: Colors.white),
                 ),
-                const SizedBox(height: 14),
-                _meta(Icons.schedule, captured),
+                const Gap(Insets.md),
+                _meta(context, Icons.schedule_outlined, captured),
                 if (record.latitude != null && record.longitude != null)
                   _meta(
+                    context,
                     Icons.location_on_outlined,
                     '${record.latitude!.toStringAsFixed(5)}, '
                     '${record.longitude!.toStringAsFixed(5)}'
                     '${record.accuracyMetres != null ? ' (±${record.accuracyMetres!.toStringAsFixed(0)} m)' : ''}',
                     highlight: record.gpsTagged,
                   ),
-                _meta(Icons.folder_outlined, 'Case ${record.caseNo}'),
-                if (record.officerId != null) _meta(Icons.badge_outlined, 'Officer ${record.officerId}'),
+                _meta(context, Icons.folder_outlined, 'Case ${record.caseNo}'),
+                if (record.officerId != null)
+                  _meta(context, Icons.badge_outlined, 'Officer ${record.officerId}'),
               ],
             ),
           ),
+          const SizedBox(height: Insets.sm),
         ],
       ),
     );
   }
 
-  Widget _meta(IconData icon, String text, {bool highlight = false}) {
+  Widget _meta(BuildContext context, IconData icon, String text, {bool highlight = false}) {
+    final theme = Theme.of(context);
+    final color = highlight ? AppColors.viewerPositive : Colors.white70;
+
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: Insets.sm),
       child: Row(
         children: [
-          Icon(icon, size: 15, color: highlight ? Colors.lightGreenAccent : Colors.white54),
-          const SizedBox(width: 8),
+          Icon(icon, size: 15, color: color),
+          const Gap(Insets.sm, horizontal: true),
           Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                color: highlight ? Colors.lightGreenAccent : Colors.white70,
-                fontSize: 13,
-              ),
-            ),
+            child: Text(text, style: theme.textTheme.bodySmall!.copyWith(color: color)),
           ),
         ],
       ),

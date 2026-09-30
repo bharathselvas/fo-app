@@ -152,6 +152,19 @@ class MockDataService {
     );
   }
 
+  /// Monotonic evidence id (`EV-004`, `EV-005`, …).
+  ///
+  /// Deriving the id from the current list length would reuse an id as soon as
+  /// a record is removed, so the highest number already in use wins instead.
+  String nextEvidenceId(FoState current) {
+    var highest = 0;
+    for (final e in current.evidence) {
+      final n = int.tryParse(e.id.replaceFirst(RegExp('^EV-'), ''));
+      if (n != null && n > highest) highest = n;
+    }
+    return 'EV-${(highest + 1).toString().padLeft(3, '0')}';
+  }
+
   /// Records one piece of evidence captured during verification.
   FoState addCaseEvidence(FoState current, EvidenceRecord record) => FoState(
         officer: current.officer,

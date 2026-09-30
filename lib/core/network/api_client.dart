@@ -24,7 +24,7 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
-/// Thin HTTP client for the Bhoomi Setu backend.
+/// Thin HTTP client for the Terranex backend.
 class ApiClient {
   ApiClient({http.Client? httpClient})
       : _http = httpClient ??

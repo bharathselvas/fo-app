@@ -21,6 +21,9 @@ class FoStateNotifier extends Notifier<FoState> {
   void addEvidence(EvidenceRecord record) =>
       state = _service.addCaseEvidence(state, record);
 
+  /// Next free evidence id, e.g. `EV-024`. Monotonic — see
+  /// [MockDataService.nextEvidenceId].
+  String nextEvidenceId() => _service.nextEvidenceId(state);
   void submitVerification({
     required String caseNo,
     required int evidenceCount,

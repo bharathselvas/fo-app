@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:drift/native.dart';
-import 'package:bhoomi_setu_fo/core/database/database.dart';
-import 'package:bhoomi_setu_fo/core/utils/ids.dart';
-import 'package:bhoomi_setu_fo/core/sync/retry_policy.dart';
+import 'package:terranex_fo/core/database/database.dart';
+import 'package:terranex_fo/core/utils/ids.dart';
+import 'package:terranex_fo/core/sync/retry_policy.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

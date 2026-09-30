@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_routes.dart';
+import '../../core/theme/tokens.dart';
 import '../../data/models/enums.dart';
 import '../../data/models/notification_item.dart';
 import '../../services/fo_providers.dart';
 import '../../widgets/common.dart';
+import '../../widgets/motion.dart';
 import '../cases/case_detail_screen.dart';
 
 /// Full notification inbox, reachable from the dashboard bell.
@@ -13,14 +17,14 @@ class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
 
   static void open(BuildContext context) {
-    Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => const NotificationsScreen()));
+    Navigator.of(context).push(AppRoutes.fadeUp(const NotificationsScreen()));
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(foStateProvider);
     final notifications = state.notifications;
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -28,9 +32,12 @@ class NotificationsScreen extends ConsumerWidget {
         actions: [
           if (state.unreadCount > 0)
             TextButton(
-              onPressed: () => ref.read(foStateProvider.notifier).markAllNotificationsRead(),
-              child: const Text('MARK ALL READ'),
+              onPressed: () =>
+                  ref.read(foStateProvider.notifier).markAllNotificationsRead(),
+              style: TextButton.styleFrom(foregroundColor: Colors.white),
+              child: Text('MARK ALL READ (${state.unreadCount})'),
             ),
+          const SizedBox(width: Insets.sm),
         ],
       ),
       body: notifications.isEmpty
@@ -40,10 +47,42 @@ class NotificationsScreen extends ConsumerWidget {
               message: 'Updates about your cases, tasks and sync status appear here.',
             )
           : ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+              key: const PageStorageKey('notifications-list'),
+              padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.md, Insets.lg, Insets.xxl),
               itemCount: notifications.length,
-              itemBuilder: (_, i) => _NotificationTile(notification: notifications[i]),
+              itemBuilder: (_, i) => Padding(
+                key: ValueKey(notifications[i].id),
+                padding: const EdgeInsets.only(bottom: Insets.sm),
+                child: _NotificationTile(notification: notifications[i]),
+              ),
             ),
+      bottomNavigationBar: state.unreadCount > 0
+          ? Material(
+              color: AppColors.surface,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Insets.lg,
+                    vertical: Insets.sm,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '${state.unreadCount} UNREAD',
+                        style: theme.textTheme.labelSmall,
+                      ),
+                      Text(
+                        '${notifications.length} TOTAL',
+                        style: theme.textTheme.labelSmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          : null,
     );
   }
 }
@@ -58,95 +97,90 @@ class _NotificationTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final n = notification;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      color: n.read ? null : const Color(0xFFE8F5E9),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          if (!n.read) ref.read(foStateProvider.notifier).markNotificationRead(n.id);
-          if (n.caseNo != null) CaseDetailScreen.open(context, caseNo: n.caseNo!);
-        },
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: n.kind.color.withValues(alpha: 0.14),
-                child: Icon(_iconFor(n), size: 18, color: n.kind.color),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+    final theme = Theme.of(context);
+
+    return TappableCard(
+      onTap: () {
+        if (!n.read) ref.read(foStateProvider.notifier).markNotificationRead(n.id);
+        if (n.caseNo != null) CaseDetailScreen.open(context, caseNo: n.caseNo!);
+      },
+      color: n.read ? AppColors.surface : AppColors.successSoft,
+      borderColor: n.read ? null : AppColors.success.withValues(alpha: 0.24),
+      padding: const EdgeInsets.all(Insets.md + 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: n.kind.color.withValues(alpha: 0.14),
+              borderRadius: Radii.smAll,
+            ),
+            child: Icon(_iconFor(n), size: 18, color: n.kind.color),
+          ),
+          const Gap(Insets.md, horizontal: true),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            n.title,
-                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14.5),
-                          ),
-                        ),
-                        if (!n.read)
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: const BoxDecoration(
-                              color: Color(0xFF2E7D32),
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                      ],
+                    Expanded(
+                      child: Text(n.title, style: theme.textTheme.titleMedium!.copyWith(fontSize: 14)),
                     ),
-                    const SizedBox(height: 4),
-                    Text(n.body, style: const TextStyle(fontSize: 13, height: 1.4)),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Text(
-                          n.kind.label,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: n.kind.color,
-                            letterSpacing: 0.4,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _timeFmt.format(n.createdAt),
-                          style: TextStyle(fontSize: 11.5, color: Colors.grey[600]),
-                        ),
-                        if (n.caseNo != null) ...[
-                          const SizedBox(width: 8),
-                          Text(
-                            n.caseNo!,
-                            style: TextStyle(fontSize: 11.5, color: Colors.grey[600]),
-                          ),
-                        ],
-                      ],
+                    if (!n.read) ...[
+                      const Gap(Insets.sm, horizontal: true),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 5),
+                        child: StatusDot(color: AppColors.brand, size: 8),
+                      ),
+                    ],
+                  ],
+                ),
+                const Gap(2),
+                Text(n.body, style: theme.textTheme.bodySmall),
+                const Gap(Insets.sm),
+                Wrap(
+                  spacing: Insets.sm,
+                  runSpacing: Insets.xs,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    AppChip(
+                      label: n.kind.label,
+                      color: n.kind.color,
+                      dense: true,
+                    ),
+                    Text(
+                      _timeFmt.format(n.createdAt),
+                      style: theme.textTheme.bodySmall!.copyWith(fontSize: 11.5),
                     ),
                     if (n.caseNo != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          'OPEN CASE ›',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.grey[800],
-                          ),
-                        ),
+                      Text(
+                        n.caseNo!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall!.copyWith(fontSize: 11.5),
                       ),
                   ],
                 ),
-              ),
-            ],
+                if (n.caseNo != null) ...[
+                  const Gap(Insets.sm),
+                  Row(
+                    children: [
+                      Text(
+                        'OPEN CASE',
+                        style: theme.textTheme.labelSmall!.copyWith(color: AppColors.brand),
+                      ),
+                      const Icon(Icons.chevron_right, size: 14, color: AppColors.brand),
+                    ],
+                  ),
+                ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

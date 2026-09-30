@@ -22,6 +22,12 @@ List<EvidenceRecord> buildMockEvidence() {
     _EvSeed('EV-015', 'LA-TN-CBE-2026-0121', 'Boundary Photograph', 'Solar block north boundary', -2, 14, 27, true, UploadStatus.synced, 10.8938, 76.9448, 8.8),
     _EvSeed('EV-016', 'LA-TN-CBE-2026-0121', 'Crop Photograph', 'Sparse shrub growth on plot', -2, 14, 33, true, UploadStatus.pending, 10.8930, 76.9456, 7.1),
     _EvSeed('EV-017', 'LA-TN-CBE-2026-0112', 'Structure Photograph', 'Warehouse inside industrial plot', -5, 12, 40, true, UploadStatus.synced, 11.0651, 76.9038, 6.2),
+    _EvSeed('EV-018', 'LA-TN-CBE-2026-0135', 'Boundary Photograph', 'Intake well access road boundary', -9, 10, 20, true, UploadStatus.synced, 11.0238, 76.9982, 5.4),
+    _EvSeed('EV-019', 'LA-TN-CBE-2026-0135', 'Land Use Photograph', 'Coconut plantation on the notified plot', -9, 10, 33, true, UploadStatus.synced, 11.0230, 76.9992, 6.7),
+    _EvSeed('EV-020', 'LA-TN-CBE-2026-0130', 'Owner Interaction', 'Tenant family entitlement discussion', -2, 11, 45, true, UploadStatus.pending, 11.0656, 76.9441, 7.9),
+    _EvSeed('EV-021', 'LA-TN-CBE-2026-0130', 'Structure Photograph', 'Rental house of the second tenant family', -2, 11, 58, true, UploadStatus.pending, 11.0648, 76.9451, 8.4),
+    _EvSeed('EV-022', 'LA-TN-CBE-2026-0133', 'Boundary Photograph', 'Demarcated handover boundary', -1, 15, 20, true, UploadStatus.synced, 10.7222, 77.0177, 5.1),
+    _EvSeed('EV-023', 'LA-TN-CBE-2026-0133', 'Structure Photograph', 'Farmer shed inside acquired portion', -1, 15, 27, true, UploadStatus.pending, 10.7214, 77.0187, 6.8),
   ];
 
   return [

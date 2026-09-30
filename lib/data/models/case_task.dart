@@ -27,8 +27,10 @@ class CaseTask {
   /// Non-zero for tasks waiting on local files (e.g. evidence upload).
   final int pendingFiles;
 
+  /// Overdue = the due date has passed. A task due *today* is not yet overdue,
+  /// it is due today — otherwise it would be hidden from Today's Work.
   bool get isOverdue =>
-      status != TaskStatus.completed && !dueDate.isAfter(_dateOnly(DateTime.now()));
+      status != TaskStatus.completed && _dateOnly(dueDate).isBefore(_dateOnly(DateTime.now()));
 
   int get daysUntilDue => _dateOnly(dueDate).difference(_dateOnly(DateTime.now())).inDays;
 
