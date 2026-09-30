@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-/// In-app mock backend for `--dart-define=MOCK_API=true` builds.
+/// In-app mock backend (default; disable with `--dart-define=MOCK_API=false`).
 ///
 /// Serves every endpoint the FO app calls so a physical device can run the
 /// release APK with no server at all.

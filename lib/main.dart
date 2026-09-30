@@ -31,7 +31,7 @@ class _BhoomiSetuAppState extends ConsumerState<BhoomiSetuApp> {
     // Wire sync after first frame when providers available
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_wired && mounted) {
-        wireDependencies(ref);
+        wireDependencies(ProviderScope.containerOf(context, listen: false));
         _wired = true;
         ref.read(connectivityServiceProvider).start();
       }
@@ -40,17 +40,13 @@ class _BhoomiSetuAppState extends ConsumerState<BhoomiSetuApp> {
 
   @override
   Widget build(BuildContext context) {
-    final boot = ref.watch(bootProvider);
+    final signedIn = ref.watch(signedInProvider);
 
     return MaterialApp(
       title: 'Bhoomi Setu FO',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
-      home: boot.when(
-        loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-        error: (_, _) => const LoginScreen(),
-        data: (user) => user == null ? const LoginScreen() : const HomeShell(),
-      ),
+      home: signedIn ? const HomeShell() : const LoginScreen(),
     );
   }
 }

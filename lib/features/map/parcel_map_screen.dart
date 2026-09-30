@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
-import '../assignments/assignments_repository.dart';
+import '../../data/models/land_case.dart';
+import '../../services/field_location_service.dart';
 import 'wkt_parser.dart';
 
-/// Parcel map: authoritative WKT boundary + real GPS. No drawing tools.
+/// Parcel map: authoritative WKT boundary + officer location. No drawing tools.
 class ParcelMapScreen extends ConsumerStatefulWidget {
-  const ParcelMapScreen({super.key, required this.task, this.embedded = false});
+  const ParcelMapScreen({super.key, required this.caseData, this.embedded = false});
 
-  final AssignedTask task;
+  final LandCase caseData;
   final bool embedded;
 
   @override
@@ -35,47 +35,29 @@ class _ParcelMapScreenState extends ConsumerState<ParcelMapScreen> {
       _locating = true;
       _gpsError = null;
     });
-    try {
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) {
-        setState(() => _gpsError = 'Location permission denied');
-        return;
-      }
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      setState(() => _gps = LatLng(pos.latitude, pos.longitude));
-      if (mounted) {
-        _controller.move(_gps!, 16);
-      }
-    } catch (e) {
-      setState(() => _gpsError = 'GPS unavailable');
-    } finally {
-      if (mounted) setState(() => _locating = false);
-    }
+    final loc = await fieldLocationService.acquire(
+      nearLat: widget.caseData.latitude,
+      nearLng: widget.caseData.longitude,
+    );
+    if (!mounted) return;
+    setState(() {
+      _gps = LatLng(loc.latitude, loc.longitude);
+      _locating = false;
+      if (loc.isMock) _gpsError = 'Approximate location (mock GPS)';
+    });
+    _controller.move(_gps!, 15);
   }
 
   @override
   Widget build(BuildContext context) {
-    final wkt = widget.task.geometryWkt;
-    final polygons = wkt != null && wkt.isNotEmpty ? WktParser.parsePolygons(wkt) : <List<LatLng>>[];
+    final wkt = widget.caseData.geometryWkt;
+    final polygons = wkt.isNotEmpty ? WktParser.parsePolygons(wkt) : <List<LatLng>>[];
 
     LatLng center;
-    if (_gps != null) {
-      center = _gps!;
-    } else if (polygons.isNotEmpty) {
-      center = WktParser.centroid(wkt!) ?? const LatLng(11.0168, 76.9558);
-    } else if (widget.task.centroidLat != null && widget.task.centroidLng != null) {
-      center = LatLng(
-        double.tryParse(widget.task.centroidLat!) ?? 11.0168,
-        double.tryParse(widget.task.centroidLng!) ?? 76.9558,
-      );
+    if (polygons.isNotEmpty) {
+      center = WktParser.centroid(wkt) ?? LatLng(widget.caseData.latitude, widget.caseData.longitude);
     } else {
-      center = const LatLng(11.0168, 76.9558);
+      center = LatLng(widget.caseData.latitude, widget.caseData.longitude);
     }
 
     return Stack(
@@ -132,7 +114,7 @@ class _ParcelMapScreenState extends ConsumerState<ParcelMapScreen> {
           Positioned(
             top: 8,
             left: 8,
-            right: 8,
+            right: 60,
             child: Card(
               color: Colors.amber.shade50,
               child: Padding(
@@ -150,8 +132,9 @@ class _ParcelMapScreenState extends ConsumerState<ParcelMapScreen> {
               child: Padding(
                 padding: const EdgeInsets.all(10),
                 child: Text(
-                  'No cached boundary polygon. Centroid shown. '
-                  '${wkt == null ? 'Geometry not available offline.' : 'WKT parse failed.'}',
+                  wkt.isEmpty
+                      ? 'No cached boundary polygon for this parcel — centroid shown.'
+                      : 'WKT parse failed — centroid shown.',
                   style: const TextStyle(fontSize: 12),
                 ),
               ),
@@ -161,7 +144,7 @@ class _ParcelMapScreenState extends ConsumerState<ParcelMapScreen> {
           bottom: 12,
           right: 12,
           child: FloatingActionButton.small(
-            heroTag: 'loc_${widget.task.id}',
+            heroTag: 'loc_${widget.caseData.id}',
             onPressed: _locate,
             child: const Icon(Icons.my_location),
           ),

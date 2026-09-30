@@ -6,6 +6,7 @@ import '../../core/config/api_config.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../widgets/status_widgets.dart';
 import '../auth/auth_providers.dart';
+import 'profile_screen.dart';
 
 class MoreScreen extends ConsumerStatefulWidget {
   const MoreScreen({super.key});
@@ -34,10 +35,21 @@ class _MoreScreenState extends ConsumerState<MoreScreen> {
         children: [
           Card(
             child: ListTile(
-              leading: const Icon(Icons.badge),
-              title: Text(user?.name ?? 'Not signed in'),
-              subtitle: Text('${user?.email ?? ''}\n${user?.role ?? ''}'),
+              leading: const CircleAvatar(child: Icon(Icons.badge)),
+              title: Text(user.name),
+              subtitle: Text('${user.email}\n${user.designation} · ${user.role}'),
               isThreeLine: true,
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => ProfileScreen.open(context),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: const Text('My Profile'),
+              subtitle: const Text('Posting, jurisdiction, contact and device status'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => ProfileScreen.open(context),
             ),
           ),
           const SizedBox(height: 16),
@@ -57,7 +69,7 @@ class _MoreScreenState extends ConsumerState<MoreScreen> {
                           ? 'Mock mode — URL ignored'
                           : 'http://10.0.2.2:3002/api',
                       helperText: ApiConfig.mockMode
-                          ? 'Built with MOCK_API=true; responses are faked in-app.'
+                          ? 'Demo data mode — rebuild with --dart-define=MOCK_API=false to use a real server.'
                           : null,
                     ),
                   ),
@@ -96,17 +108,6 @@ class _MoreScreenState extends ConsumerState<MoreScreen> {
               ),
             ),
           ],
-          const SizedBox(height: 16),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.logout, color: Colors.red),
-              title: const Text('Sign out', style: TextStyle(color: Colors.red)),
-              onTap: () async {
-                await ref.read(sessionServiceProvider).logout();
-                ref.read(currentUserProvider.notifier).state = null;
-              },
-            ),
-          ),
           const SizedBox(height: 24),
           const StatusChip(label: 'Bhoomi Setu Field Officer', color: Colors.indigo),
         ],

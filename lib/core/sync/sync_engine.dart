@@ -107,7 +107,6 @@ class SyncEngine {
   Future<SyncResult> runNow() async {
     if (_running) return SyncResult.inProgress();
     _running = true;
-    _connectivity.markSyncing();
     try {
       if (ApiConfig.devForceOffline) return SyncResult.offline();
       await _connectivity.refresh();
@@ -116,6 +115,13 @@ class SyncEngine {
       }
 
       final pending = await _queue.pending();
+      if (pending.isEmpty) {
+        // Nothing to do — never flip the connection status for an idle run,
+        // otherwise the status listener re-triggers us in a loop.
+        return SyncResult(success: true, synced: 0, failed: 0);
+      }
+
+      _connectivity.markSyncing();
       final ordered = _order(pending);
 
       var synced = 0;

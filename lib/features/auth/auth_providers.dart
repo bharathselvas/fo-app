@@ -1,4 +1,4 @@
-import 'package:drift/drift.dart' show QueryExecutor;
+import 'package:drift/drift.dart' show OrderingTerm, QueryExecutor;
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,7 +6,10 @@ import '../../core/database/database.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/storage/file_store.dart';
-import 'session_service.dart';
+import '../../data/models/field_officer.dart';
+import '../../services/fo_providers.dart';
+
+export '../../data/models/field_officer.dart' show FieldOfficer;
 
 final dbProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase(openDatabase());
@@ -19,10 +22,6 @@ QueryExecutor openDatabase() => driftDatabase(name: 'bhoomi_setu_fo');
 
 final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
 
-final sessionServiceProvider = Provider<SessionService>((ref) {
-  return SessionService(ref.watch(dbProvider), ref.watch(apiClientProvider));
-});
-
 final fileStoreProvider = Provider<FileStore>((ref) => FileStore());
 
 final connectionProvider = StreamProvider<ConnectionStatus>((ref) {
@@ -31,17 +30,25 @@ final connectionProvider = StreamProvider<ConnectionStatus>((ref) {
   return service.statusStream;
 });
 
-/// Current authenticated user (null = logged out).
-final currentUserProvider = StateProvider<AppUser?>((ref) => null);
-
-/// Boot: restore offline session if present.
-final bootProvider = FutureProvider<AppUser?>((ref) async {
-  final session = ref.watch(sessionServiceProvider);
-  final restored = await session.restore();
-  if (restored == null) return null;
-  // Silent online refresh — ignore failures to keep offline session
-  final refreshed = await session.refreshMe();
-  final user = refreshed ?? restored.user;
-  ref.read(currentUserProvider.notifier).state = user;
-  return user;
+/// Queue rows still waiting to be uploaded (PENDING / FAILED), watched live.
+final pendingQueueRowsProvider = StreamProvider<List<SyncQueue>>((ref) {
+  final db = ref.watch(dbProvider);
+  final query = db.select(db.syncQueues)
+    ..where((t) => t.status.isIn(['PENDING', 'FAILED']))
+    ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]);
+  return query.watch();
 });
+
+/// How many records are still on the device waiting for a connection.
+final pendingSyncCountProvider = Provider<int>(
+  (ref) => ref.watch(pendingQueueRowsProvider).valueOrNull?.length ?? 0,
+);
+
+/// Signed-in officer (always populated for the prototype).
+final currentUserProvider = Provider<FieldOfficer>(
+  (ref) => ref.watch(foStateProvider).officer,
+);
+
+/// Prototype sign-in gate: no server, no credentials check — the officer
+/// simply enters the app (see `login_screen.dart`).
+final signedInProvider = StateProvider<bool>((_) => false);

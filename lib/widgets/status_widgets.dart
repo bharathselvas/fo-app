@@ -12,15 +12,30 @@ class ConnectionBanner extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final status = ref.watch(connectionProvider).valueOrNull ?? ConnectionStatus.offline;
-    if (status == ConnectionStatus.online && pendingCount == 0) {
-      return const SizedBox.shrink();
-    }
 
-    final (color, label) = switch (status) {
-      ConnectionStatus.online => (Colors.green.shade700, 'ONLINE'),
-      ConnectionStatus.offline => (Colors.red.shade700, 'OFFLINE'),
-      ConnectionStatus.syncing => (Colors.orange.shade800, 'SYNCING'),
-      ConnectionStatus.serverUnavailable => (Colors.deepOrange.shade800, 'SERVER UNAVAILABLE'),
+    // Always rendered with a fixed height so a status change never shifts the
+    // page underneath (this used to make the whole app visibly flicker).
+    final (color, icon, label) = switch (status) {
+      ConnectionStatus.online => pendingCount > 0
+          ? (
+              Colors.amber.shade800,
+              Icons.cloud_upload,
+              'ONLINE — $pendingCount ITEM${pendingCount == 1 ? '' : 'S'} PENDING'
+            )
+          : (Colors.green.shade700, Icons.cloud_done, 'ONLINE — SYNCED'),
+      ConnectionStatus.offline => (
+          Colors.red.shade700,
+          Icons.cloud_off,
+          pendingCount > 0
+              ? 'OFFLINE — $pendingCount ITEM${pendingCount == 1 ? '' : 'S'} PENDING'
+              : 'OFFLINE — CHANGES SAVE ON THIS DEVICE'
+        ),
+      ConnectionStatus.syncing => (Colors.orange.shade800, Icons.cloud_sync, 'SYNCING…'),
+      ConnectionStatus.serverUnavailable => (
+          Colors.deepOrange.shade800,
+          Icons.cloud_off,
+          'SERVER UNAVAILABLE — OFFLINE MODE'
+        ),
     };
 
     return Material(
@@ -31,17 +46,11 @@ class ConnectionBanner extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              Icon(
-                status == ConnectionStatus.online ? Icons.cloud_done : Icons.cloud_off,
-                color: Colors.white,
-                size: 18,
-              ),
+              Icon(icon, color: Colors.white, size: 18),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  status == ConnectionStatus.offline && pendingCount > 0
-                      ? 'OFFLINE — $pendingCount visit${pendingCount == 1 ? '' : 's'} waiting for synchronization'
-                      : label,
+                  label,
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,

@@ -3,9 +3,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// API configuration. Base URL is overridable for physical-device LAN testing.
 class ApiConfig {
-  /// When true (build with `--dart-define=MOCK_API=true`), all HTTP calls are
-  /// served in-app by [MockHttpClient] — no backend required.
-  static const bool mockMode = bool.fromEnvironment('MOCK_API');
+  /// When true (the default; disable with `--dart-define=MOCK_API=false`),
+  /// all HTTP calls are served in-app by [MockHttpClient] — no backend required.
+  static const bool mockMode = bool.fromEnvironment('MOCK_API', defaultValue: true);
 
   static const String defaultBaseUrl = 'http://10.0.2.2:3002/api';
   static const String prefBaseUrl = 'api_base_url';

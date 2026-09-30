@@ -12,7 +12,8 @@ Bhoomi Setu Field Officer is a robust, **offline-first** Flutter application des
     *   **Structures**: Type, area, construction, and condition.
     *   **Vegetation**: Species, count, crop type, and area.
     *   **Documents**: Local file picking and safe storage.
-*   **Secure & Performant**: Implements `flutter_secure_storage` for session management and token handling. Reactive state management powered by `Riverpod`.
+*   **No Login Required**: The app boots straight into the dashboard with a local field officer identity — no credentials or backend session needed.
+*   **Demo Data by default**: Built with the in-app mock backend on, so tasks/parcels are available offline. Rebuild with `--dart-define=MOCK_API=false` to talk to a real server. Reactive state management powered by `Riverpod`.
 
 ## 🛠 Tech Stack & Libraries
 
@@ -36,7 +37,7 @@ lib/
 │   └── theme/        # App-wide UI theme definitions
 ├── features/
 │   ├── assignments/  # Task lists and parcel details
-│   ├── auth/         # Login, session management
+│   ├── auth/         # Officer identity (no login)
 │   ├── evidence/     # Camera and media capture screens
 │   ├── field_visit/  # Survey wizard and data collection forms
 │   ├── home/         # Main dashboard and shell
@@ -50,7 +51,7 @@ lib/
 
 The app maintains a comprehensive local database to support its offline capabilities:
 
-*   **`Sessions`**: Stores authenticated user session and JWT tokens.
+*   **`Sessions`**: Legacy table, no longer written (the app has no login).
 *   **`AssignedTasks`**: Caches parcel assignments, geometry (WKT), and case details.
 *   **`FieldVisits`**: Draft and completed field survey forms, including boundary confirmation and land use data.
 *   **`Structures` & `Vegetations`**: Specific asset data linked to a field visit.
@@ -82,6 +83,10 @@ The app maintains a comprehensive local database to support its offline capabili
 4.  Run the application:
     ```bash
     flutter run
+    ```
+    By default the app uses built-in demo data (no server). To use a real backend instead:
+    ```bash
+    flutter run --dart-define=MOCK_API=false
     ```
 
 ## 🔄 Sync Engine Workflow

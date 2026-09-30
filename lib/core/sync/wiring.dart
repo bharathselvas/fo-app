@@ -7,23 +7,28 @@ import '../../features/field_visit/field_visit_controller.dart';
 
 /// Call once after providers are ready to wire sync engine + controllers
 /// and start auto-sync on connectivity regain.
-void wireDependencies(WidgetRef ref) {
-  final db = ref.read(dbProvider);
+void wireDependencies(ProviderContainer container) {
+  final db = container.read(dbProvider);
   final queue = SyncQueueService(db);
   final engine = SyncEngine(
     db,
-    ref.read(apiClientProvider),
+    container.read(apiClientProvider),
     queue,
-    ref.read(fileStoreProvider),
-    ref.read(connectivityServiceProvider),
+    container.read(fileStoreProvider),
+    container.read(connectivityServiceProvider),
   );
-  ref.read(syncEngineHolder.notifier).state = engine;
-  ref.read(fieldVisitControllerHolder.notifier).state =
-      FieldVisitController(db, queue, ref.read(fileStoreProvider));
+  container.read(syncEngineHolder.notifier).state = engine;
+  container.read(fieldVisitControllerHolder.notifier).state =
+      FieldVisitController(db, queue, container.read(fileStoreProvider));
 
-  ref.read(connectivityServiceProvider).statusStream.listen((status) {
-    if (status == ConnectionStatus.online) {
-      engine.runNow();
-    }
+  // Cooldown so the engine's own syncing -> online transition cannot re-trigger
+  // an endless run() loop (the historic UI flicker).
+  var lastAutoRun = DateTime.fromMillisecondsSinceEpoch(0);
+  container.read(connectivityServiceProvider).statusStream.listen((status) {
+    if (status != ConnectionStatus.online) return;
+    final now = DateTime.now();
+    if (now.difference(lastAutoRun) < const Duration(seconds: 10)) return;
+    lastAutoRun = now;
+    engine.runNow();
   });
 }
